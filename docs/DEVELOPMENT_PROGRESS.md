@@ -6,17 +6,29 @@
 
 ## 当前状态
 
-当前处于**规则与架构设计已整理完成、尚未开始代码实现**的阶段。
+当前处于**项目骨架已建立、domain 模块已实现、准备继续实现 board/rules 等后续模块**的阶段。
 
 已有文档：
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
-| `hermes/GAME_RULES.md` | 已更新 | 面向玩家/产品的游戏规则说明 |
-| `hermes/MODULE_DESIGN.md` | 已更新 | 面向开发的模块架构、接口契约和测试边界 |
-| `hermes/DEVELOPMENT_PROGRESS.md` | 当前文件 | 后续开发交接入口 |
+| `docs/GAME_RULES.md` | 已更新 | 面向玩家/产品的游戏规则说明 |
+| `docs/MODULE_DESIGN.md` | 已更新 | 面向开发的模块架构、接口契约和测试边界 |
+| `docs/DEVELOPMENT_PROGRESS.md` | 当前文件 | 后续开发交接入口 |
 
-注意：截至本记录创建时，`hermes/` 目录在 git 中仍是未跟踪状态。后续提交前需要确认是否将三份文档一起纳入版本控制。
+当前已完成并归档的 OpenSpec 变更：
+
+| 变更 | 状态 | 说明 |
+|---|---|---|
+| `setup-project-dev-environment` | 已归档 | 建立 Python 项目、测试/lint/typecheck 命令、模块包骨架和 Textual TUI smoke test |
+| `implement-game-domain-module` | 已归档 | 实现 `richman.domain` 共享领域模型，并同步主规格 `game-domain-model` |
+
+最近一次验证结果：
+
+- `uv run pytest`：12 passed
+- `uv run ruff check`：passed
+- `uv run ruff format --check`：passed
+- `uv run mypy src`：passed
 
 ---
 
@@ -99,19 +111,37 @@ domain -> board, rules, render, player -> engine -> app
 
 ---
 
-## 尚未实现
+## 已实现
 
-当前没有代码实现，后续需要从零开始建立工程结构。
+### 项目与测试骨架
+
+- 已建立 `src/richman` 包布局和 `tests` 测试目录。
+- 已配置 `pyproject.toml`、`uv.lock`、Ruff、mypy、pytest 和 Textual/Rich 运行依赖。
+- 已提供 `richman` CLI 入口和基础包导入 smoke test。
+- 已提供 Textual TUI adapter 的最小 smoke test，当前仍使用 `render.ports.GameSnapshotView` 占位视图。
+
+### domain 模块
+
+- 已实现 `src/richman/domain/models.py` 和 `richman.domain` 公共导出入口。
+- 已实现共享枚举：`CellType`、`CardType`、`MoveDirection`、`Action`、`Phase`、`GameEventType`。
+- 已实现默认常量：`START_BONUS`、`JAIL_ROUNDS`、`DICE_SIDES`、`DEMOLISH_RANGE`。
+- 已实现不可变静态配方：`PropertyTemplate`、`CardDefinition`、`BoardCellDefinition`、`GameConfig`。
+- 已实现卡牌意图：`GrantMoneyIntent`、`DeductMoneyIntent`、`MoveIntent`、`GoToJailIntent`、`ObtainCardIntent` 和 `CardIntent`。
+- 已实现运行时状态：`PropertyState`、`PropertyRef`、`HandCards`、`PlayerState`、`ReclaimPlan`、`InternalGameState`。
+- 已实现视图与事件模型：`PublicCellInfo`、`PublicBoardInfo`、`PublicPlayerInfo`、`PlayerView`、`GameSnapshot`、`GameEvent`。
+- 已新增 `tests/test_domain_models.py`，覆盖公共 API、依赖边界、不可变模型、状态引用、快照私有/公开分离和事件清单。
+- 已同步主 OpenSpec 规格：`openspec/specs/game-domain-model/spec.md`。
+
+## 尚未实现
 
 建议优先实现顺序：
 
-1. `domain`：定义所有枚举、dataclass/类型、配置结构。
-2. `board`：实现不可变棋盘、`move`、`get_range`、格子查询。
-3. `rules`：实现纯函数并配套单元测试。
-4. `render`：先做最小可用终端渲染和输入原语。
-5. `player`：实现 HumanPlayer 和基础 AIPlayer。
-6. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪。
-7. `app`：加载配置、创建玩家、启动游戏。
+1. `board`：实现不可变棋盘、`move`、`get_range`、格子查询。
+2. `rules`：实现纯函数并配套单元测试。
+3. `render`：将当前占位视图逐步对齐 `domain.GameSnapshot`，保留 adapter 边界。
+4. `player`：实现 HumanPlayer 和基础 AIPlayer。
+5. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪。
+6. `app`：加载配置、创建玩家、启动游戏。
 
 ---
 
@@ -151,11 +181,10 @@ domain -> board, rules, render, player -> engine -> app
 
 ## 下一步建议
 
-下一次继续开发时，建议先创建代码目录和测试框架，然后从 `domain` 与 `board` 开始。第一批可交付成果应包含：
+下一次继续开发时，建议从 `board` 模块开始。第一批可交付成果应包含：
 
-- 基础 package 结构。
-- `domain` 类型定义。
 - `board.move` 与 `board.get_range`。
+- 棋盘格类型查询和地块模板查询。
 - 对起点计数、后退移动、范围去重的单元测试。
 
 完成这些后，再进入 `rules` 的租金、升级判断、卡牌解析、破产回收测试。
