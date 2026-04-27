@@ -1,12 +1,12 @@
 # 终端大富翁 — 开发进度记录
 
-最后更新：2026-04-27
+最后更新：2026-04-28
 
 ---
 
 ## 当前状态
 
-当前处于**项目骨架已建立、domain 模块已实现、准备继续实现 board/rules 等后续模块**的阶段。
+当前处于**项目骨架、domain 模块、board 模块和 rules 模块已实现，准备继续实现 render/player 等后续模块**的阶段。
 
 已有文档：
 
@@ -22,13 +22,21 @@
 |---|---|---|
 | `setup-project-dev-environment` | 已归档 | 建立 Python 项目、测试/lint/typecheck 命令、模块包骨架和 Textual TUI smoke test |
 | `implement-game-domain-module` | 已归档 | 实现 `richman.domain` 共享领域模型，并同步主规格 `game-domain-model` |
+| `implement-board-module` | 已归档 | 实现 `richman.board` 不可变棋盘、静态查询、环形移动、范围查询，并同步主规格 `board-spatial-model` |
+| `implement-rules-module` | 已归档 | 实现 `richman.rules` 纯规则函数，并同步主规格 `rules-engine` |
+
+当前活动 OpenSpec 变更：
+
+| 变更 | 状态 | 说明 |
+|---|---|---|
+| 无 | - | 当前没有待处理的 active change |
 
 最近一次验证结果：
 
-- `uv run pytest`：12 passed
+- `uv run pytest`：67 passed
 - `uv run ruff check`：passed
 - `uv run ruff format --check`：passed
-- `uv run mypy src`：passed
+- `uv run mypy src`：passed，17 source files
 
 ---
 
@@ -132,16 +140,37 @@ domain -> board, rules, render, player -> engine -> app
 - 已新增 `tests/test_domain_models.py`，覆盖公共 API、依赖边界、不可变模型、状态引用、快照私有/公开分离和事件清单。
 - 已同步主 OpenSpec 规格：`openspec/specs/game-domain-model/spec.md`。
 
+### board 模块
+
+- 已实现 `src/richman/board/model.py` 和 `richman.board` 公共导出入口。
+- 已实现不可变 `Board`，保存静态棋盘格序列和 START 位置。
+- 已实现不可变 `MoveResult`，返回 `new_position` 和 `start_crossings`。
+- 已实现 `create(config)`，从 `GameConfig.board_cells` 创建棋盘并校验非空、恰好一个 START、PROPERTY 模板约束。
+- 已实现 `total_cells`、`get_cell_type`、`get_property_template` 静态查询。
+- 已实现 `move`，支持正向/反向/多圈环形移动和 START 进入次数统计。
+- 已实现 `get_range`，按中心、顺时针、逆时针顺序返回去重范围位置。
+- 已新增 `tests/test_board.py`，覆盖公共 API、依赖边界、创建校验、静态查询、移动计数和范围查询。
+- 已同步主 OpenSpec 规格：`openspec/specs/board-spatial-model/spec.md`。
+
+### rules 模块
+
+- 已实现 `src/richman/rules/model.py` 和 `richman.rules` 公共导出入口。
+- 已实现 `calculate_rent(template, level)`，按地块模板租金表和等级返回租金，并拒绝非法等级。
+- 已实现 `can_upgrade(template, property_state)`，仅判断等级是否低于最高等级，不处理现金约束。
+- 已实现 `resolve_card_intent(card)`，将金钱、移动、入狱、免狱卡和拆除卡解析为 domain 中的结构化 intent，不执行效果。
+- 已实现 `calculate_bankruptcy(properties, shortfall)`，按 `acquired_at` 从早到晚生成回收计划，退款为购买价加累计升级投入。
+- 已实现 `can_afford(cash, amount)`，判断非负现金是否覆盖非负金额，并拒绝负输入。
+- 已新增 `tests/test_rules.py`，覆盖公共 API、依赖边界、纯函数无副作用、租金、升级、卡牌解析、支付判断和破产回收。
+- 已同步主 OpenSpec 规格：`openspec/specs/rules-engine/spec.md`。
+
 ## 尚未实现
 
 建议优先实现顺序：
 
-1. `board`：实现不可变棋盘、`move`、`get_range`、格子查询。
-2. `rules`：实现纯函数并配套单元测试。
-3. `render`：将当前占位视图逐步对齐 `domain.GameSnapshot`，保留 adapter 边界。
-4. `player`：实现 HumanPlayer 和基础 AIPlayer。
-5. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪。
-6. `app`：加载配置、创建玩家、启动游戏。
+1. `render`：将当前占位视图逐步对齐 `domain.GameSnapshot`，保留 adapter 边界。
+2. `player`：实现 HumanPlayer 和基础 AIPlayer。
+3. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪。
+4. `app`：加载配置、创建玩家、启动游戏。
 
 ---
 
@@ -181,10 +210,4 @@ domain -> board, rules, render, player -> engine -> app
 
 ## 下一步建议
 
-下一次继续开发时，建议从 `board` 模块开始。第一批可交付成果应包含：
-
-- `board.move` 与 `board.get_range`。
-- 棋盘格类型查询和地块模板查询。
-- 对起点计数、后退移动、范围去重的单元测试。
-
-完成这些后，再进入 `rules` 的租金、升级判断、卡牌解析、破产回收测试。
+下一次继续开发时，可以进入 `render` 或 `player` 模块；二者都只依赖 `domain`，可在 `engine` 前独立实现和测试。
