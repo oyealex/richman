@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前处于**项目骨架、domain 模块、board 模块和 rules 模块已实现，准备继续实现 render/player 等后续模块**的阶段。
+当前处于**项目骨架、domain 模块、board 模块、rules 模块和 player 模块已实现，准备继续实现 render/engine 等后续模块**的阶段。
 
 已有文档：
 
@@ -24,6 +24,7 @@
 | `implement-game-domain-module` | 已归档 | 实现 `richman.domain` 共享领域模型，并同步主规格 `game-domain-model` |
 | `implement-board-module` | 已归档 | 实现 `richman.board` 不可变棋盘、静态查询、环形移动、范围查询，并同步主规格 `board-spatial-model` |
 | `implement-rules-module` | 已归档 | 实现 `richman.rules` 纯规则函数，并同步主规格 `rules-engine` |
+| `implement-player-module` | 已归档 | 实现 `richman.player` 玩家决策边界、HumanPlayer、AIPlayer，并同步主规格 `player-decision-model` |
 
 当前活动 OpenSpec 变更：
 
@@ -33,10 +34,10 @@
 
 最近一次验证结果：
 
-- `uv run pytest`：67 passed
+- `uv run pytest`：82 passed
 - `uv run ruff check`：passed
 - `uv run ruff format --check`：passed
-- `uv run mypy src`：passed，17 source files
+- `uv run mypy src`：passed，18 source files
 
 ---
 
@@ -163,14 +164,23 @@ domain -> board, rules, render, player -> engine -> app
 - 已新增 `tests/test_rules.py`，覆盖公共 API、依赖边界、纯函数无副作用、租金、升级、卡牌解析、支付判断和破产回收。
 - 已同步主 OpenSpec 规格：`openspec/specs/rules-engine/spec.md`。
 
+### player 模块
+
+- 已实现 `src/richman/player/model.py` 和 `richman.player` 公共导出入口。
+- 已定义 `Player` 抽象接口，覆盖 `name`、`wait_for_dice()`、`decide(view, actions, engine_context)` 和 `choose_demolish_target(view, candidates, engine_context)`。
+- 已定义受限 `InputContext` 协议，HumanPlayer 只通过 `prompt_choice` 等输入原语获取选择，不导入 render、engine 或 adapter。
+- 已实现 `HumanPlayer`，支持注入掷骰等待回调，并通过受限上下文选择合法动作和拆除目标。
+- 已实现 `AIPlayer`，采用确定性动作优先级和稳定拆除目标选择，不调用随机源、不读取 `InternalGameState`。
+- 已新增 `tests/test_player.py`，覆盖公共 API、依赖边界、接口实现、HumanPlayer 输入委托、AIPlayer 确定性策略、非法输入错误和决策不修改 `PlayerView` 数据。
+- 已同步主 OpenSpec 规格：`openspec/specs/player-decision-model/spec.md`。
+
 ## 尚未实现
 
 建议优先实现顺序：
 
 1. `render`：将当前占位视图逐步对齐 `domain.GameSnapshot`，保留 adapter 边界。
-2. `player`：实现 HumanPlayer 和基础 AIPlayer。
-3. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪。
-4. `app`：加载配置、创建玩家、启动游戏。
+2. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪，并接入 player 决策边界。
+3. `app`：加载配置、创建玩家、启动游戏。
 
 ---
 
@@ -210,4 +220,4 @@ domain -> board, rules, render, player -> engine -> app
 
 ## 下一步建议
 
-下一次继续开发时，可以进入 `render` 或 `player` 模块；二者都只依赖 `domain`，可在 `engine` 前独立实现和测试。
+下一次继续开发时，建议进入 `render` 模块；render 完成后即可继续实现 `engine` 主循环并接入 board、rules、player 和 render。
