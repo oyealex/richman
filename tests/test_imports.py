@@ -19,6 +19,7 @@ def test_planned_module_packages_are_importable() -> None:
         "richman.engine",
         "richman.render",
         "richman.render.ports",
+        "richman.app",
     ]
 
     for module in modules:

@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前处于**domain、board、rules、player、render、engine 模块已实现，准备继续实现 app 装配层**的阶段。
+当前处于**domain、board、rules、player、render、engine、app 模块已实现，准备归档 app 装配层变更**的阶段。
 
 已有文档：
 
@@ -32,14 +32,14 @@
 
 | 变更 | 状态 | 说明 |
 |---|---|---|
-| 无 | - | 当前没有待处理的 active change |
+| `implement-app-module` | 实现完成，待归档 | 实现 `richman.app` 默认配置、玩家创建、engine 装配、受限运行入口和 `richman play` CLI 接入 |
 
 最近一次验证结果：
 
-- `uv run pytest`：158 passed
+- `uv run pytest`：172 passed
 - `uv run ruff check`：passed
 - `uv run ruff format --check`：passed
-- `uv run mypy src`：passed，19 source files
+- `uv run mypy src`：passed，20 source files
 
 ---
 
@@ -206,11 +206,26 @@ domain -> board, rules, render, player -> engine -> app
 - 已新增 `tests/test_engine.py`（65 tests），覆盖公共 API、依赖边界、初始化、主循环、五阶段流程、监狱、落点处理、机会卡、动作、破产回收、视图生成和 InputContext。
 - 已同步主 OpenSpec 规格：`openspec/specs/engine-core/spec.md`、`engine-turn-flow/spec.md`、`engine-landing/spec.md`、`engine-bankruptcy/spec.md`、`engine-view-generation/spec.md`。
 
+### app 模块
+
+- 已新增 `src/richman/app.py`，作为应用装配层，负责连接配置、board、players、renderer 和 engine。
+- 已实现 `build_default_config()`，提供无需外部配置文件即可运行的默认棋盘、地块和机会卡组。
+- 已实现 `create_players(count)`，按 2-4 人范围创建稳定命名的 AIPlayer，并拒绝非法玩家数量。
+- 已实现 `create_engine(config, players, renderer, seed)`，创建 Board 并调用 `GameEngine.create()`。
+- 已实现 `run_game(players_count, max_turns, seed, renderer, config)`，启动 engine 并返回最终或受限运行后的 `InternalGameState`。
+- 已更新 `richman play` 命令，支持 `--players`、`--max-turns` 和 `--seed`，并通过 app 装配入口启动真实游戏流程。
+- 已新增 `tests/test_app.py` 并更新 `tests/test_cli.py`、`tests/test_imports.py`，覆盖默认配置、玩家创建、engine 装配、受限运行、CLI 参数和导入 smoke。
+- 已创建 OpenSpec 变更 `implement-app-module`，包含 `app-assembly` delta spec，待归档后同步主规格。
+
 ## 尚未实现
 
-建议优先实现顺序：
+当前模块化开发主线中的七个模块均已实现。
 
-1. `app`：加载配置、创建玩家、启动游戏。
+后续可选增强：
+
+1. 外部 YAML/JSON 配置文件加载。
+2. 完整 Textual 交互式游戏循环。
+3. 存档/读档或回放能力。
 
 ---
 
@@ -250,4 +265,4 @@ domain -> board, rules, render, player -> engine -> app
 
 ## 下一步建议
 
-下一次继续开发时，建议进入 `engine` 模块，实现主循环并接入 board、rules、player 和 render。
+下一次继续开发时，建议归档 `implement-app-module`，将 `app-assembly` delta spec 同步到主规格。
