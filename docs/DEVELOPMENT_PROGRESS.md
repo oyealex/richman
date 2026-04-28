@@ -1,12 +1,12 @@
 # 终端大富翁 — 开发进度记录
 
-最后更新：2026-04-28
+最后更新：2026-04-29
 
 ---
 
 ## 当前状态
 
-当前处于**项目骨架、domain 模块、board 模块、rules 模块和 player 模块已实现，准备继续实现 render/engine 等后续模块**的阶段。
+当前处于**domain、board、rules、player、render、engine 模块已实现，准备继续实现 app 装配层**的阶段。
 
 已有文档：
 
@@ -25,6 +25,8 @@
 | `implement-board-module` | 已归档 | 实现 `richman.board` 不可变棋盘、静态查询、环形移动、范围查询，并同步主规格 `board-spatial-model` |
 | `implement-rules-module` | 已归档 | 实现 `richman.rules` 纯规则函数，并同步主规格 `rules-engine` |
 | `implement-player-module` | 已归档 | 实现 `richman.player` 玩家决策边界、HumanPlayer、AIPlayer，并同步主规格 `player-decision-model` |
+| `implement-render-module` | 已归档 | 实现 `richman.render` 渲染边界、默认 console renderer、事件隐私遮蔽、输入原语和 Textual adapter 迁移，并同步主规格 `render-adapter-architecture` |
+| `implement-engine-module` | 已归档 | 实现 `richman.engine` GameEngine、五阶段回合循环、落点处理、机会卡、破产回收、视图裁剪和 InputContext，并同步主规格 `engine-core`/`engine-turn-flow`/`engine-landing`/`engine-bankruptcy`/`engine-view-generation` |
 
 当前活动 OpenSpec 变更：
 
@@ -34,10 +36,10 @@
 
 最近一次验证结果：
 
-- `uv run pytest`：82 passed
+- `uv run pytest`：158 passed
 - `uv run ruff check`：passed
 - `uv run ruff format --check`：passed
-- `uv run mypy src`：passed，18 source files
+- `uv run mypy src`：passed，19 source files
 
 ---
 
@@ -127,7 +129,7 @@ domain -> board, rules, render, player -> engine -> app
 - 已建立 `src/richman` 包布局和 `tests` 测试目录。
 - 已配置 `pyproject.toml`、`uv.lock`、Ruff、mypy、pytest 和 Textual/Rich 运行依赖。
 - 已提供 `richman` CLI 入口和基础包导入 smoke test。
-- 已提供 Textual TUI adapter 的最小 smoke test，当前仍使用 `render.ports.GameSnapshotView` 占位视图。
+- 已提供 Textual TUI adapter 的最小 smoke test，当前消费 `domain.GameSnapshot` 或 render 契约派生展示内容。
 
 ### domain 模块
 
@@ -174,13 +176,41 @@ domain -> board, rules, render, player -> engine -> app
 - 已新增 `tests/test_player.py`，覆盖公共 API、依赖边界、接口实现、HumanPlayer 输入委托、AIPlayer 确定性策略、非法输入错误和决策不修改 `PlayerView` 数据。
 - 已同步主 OpenSpec 规格：`openspec/specs/player-decision-model/spec.md`。
 
+### render 模块
+
+- 已重构 `src/richman/render/ports.py` 和 `richman.render` 公共导出入口，移除 `GameSnapshotView`、`DecisionRequest`、`PlayerDecision` 等占位契约。
+- 已定义 `Renderer` 协议，覆盖 `render_frame(snapshot)`、`render_event_log(events, viewer_index)`、`prompt_choice(question, options)`、`prompt_number(question, min_value, max_value)` 和 `render_game_over(winner_name)`。
+- 已实现 `ConsoleRenderer` 默认标准库渲染器，直接消费 `domain.GameSnapshot` 和 `GameEvent`，不导入 engine、board、rules、player、adapter、Textual 或 Rich UI 类型。
+- 已实现快照文本格式化，展示回合、阶段、骰子、公开棋盘、公开玩家、viewer 私有状态、viewer 持有地和可用动作，并支持无动作场景。
+- 已实现事件日志格式化和 viewer 级隐私遮蔽，隐藏非 viewer 的现金、手牌、购买价、升级投入和回收金额等私密数据。
+- 已实现 `prompt_choice` 和 `prompt_number` 输入原语，覆盖空选项、非法范围、序号选择、文本选择和数字边界校验。
+- 已迁移 `src/richman/adapters/textual_tui/app.py`，使 Textual app 消费 `GameSnapshot` 或 render 契约派生展示内容，并保留 headless smoke test。
+- 已新增 `tests/test_render.py` 并更新 `tests/test_textual_tui.py`，覆盖公共 API、依赖边界、快照展示、无 mutation、事件隐私、输入原语和 Textual 构造。
+- 已同步主 OpenSpec 规格：`openspec/specs/render-adapter-architecture/spec.md`。
+
+### engine 模块
+
+- 已创建 `src/richman/engine/model.py` 和 `richman.engine` 公共导出入口。
+- 已实现 `GameEngine` 类，包含 `create(config, board, players, renderer, seed)` 静态工厂、`get_state()`、`snapshot_for(viewer_index)` 和 `start(max_turns)` 公共 API。
+- 已实现 `_init_state()` 初始化 `InternalGameState`（玩家、地块、回合计数、事件日志）。
+- 已实现 `start()` 主循环，跳过破产玩家、递增 turn、调用 `_process_turn()` 并检测游戏结束。
+- 已实现 `_process_turn()` 五阶段回合流程（EFFECT_UPDATE / DICE_ROLL / LANDING / ACTION / END）。
+- 已实现 `_process_landing()` 六种格子落点处理（START / PROPERTY / CHANCE / GO_TO_JAIL / JAIL_SPACE / BLANK）和机会卡效果执行（GrantMoney / DeductMoney / Move / GoToJail / ObtainCard）。
+- 已实现移动卡连锁（递归 `_process_landing`，只处理阶段③效果，阶段④只在最终落点执行一次）。
+- 已实现入狱判决（有/无免狱卡两种路径）和监狱倒计时机制。
+- 已实现 `_compute_actions()` 动作计算（BUY / UPGRADE / USE_DEMOLISH / SKIP）和 `_execute_action()` 动作执行。
+- 已实现 `_pay_debt()` 债务支付统一入口（现金足够→直接付；现金不足→回收地块→付清或破产）。
+- 已实现 `_reclaim_property()` 和 `_finalize_bankruptcy()` 破产回收流程（按获取时间顺序回收、地块重置、现金手牌清零、标记 bankrupt）。
+- 已实现 `_build_player_view()` 和 `_build_snapshot()` 视图裁剪生成（PublicBoardInfo / PublicPlayerInfo / viewer_private）。
+- 已实现 `_EngineInputContext` 受限输入上下文，仅暴露 `prompt_choice`，不暴露内部状态。
+- 已新增 `tests/test_engine.py`（65 tests），覆盖公共 API、依赖边界、初始化、主循环、五阶段流程、监狱、落点处理、机会卡、动作、破产回收、视图生成和 InputContext。
+- 已同步主 OpenSpec 规格：`openspec/specs/engine-core/spec.md`、`engine-turn-flow/spec.md`、`engine-landing/spec.md`、`engine-bankruptcy/spec.md`、`engine-view-generation/spec.md`。
+
 ## 尚未实现
 
 建议优先实现顺序：
 
-1. `render`：将当前占位视图逐步对齐 `domain.GameSnapshot`，保留 adapter 边界。
-2. `engine`：实现五阶段主循环、状态修改、事件日志、视图裁剪，并接入 player 决策边界。
-3. `app`：加载配置、创建玩家、启动游戏。
+1. `app`：加载配置、创建玩家、启动游戏。
 
 ---
 
@@ -220,4 +250,4 @@ domain -> board, rules, render, player -> engine -> app
 
 ## 下一步建议
 
-下一次继续开发时，建议进入 `render` 模块；render 完成后即可继续实现 `engine` 主循环并接入 board、rules、player 和 render。
+下一次继续开发时，建议进入 `engine` 模块，实现主循环并接入 board、rules、player 和 render。

@@ -1,4 +1,5 @@
 .codex/
+.claude/
 
 # Python bytecode and caches
 __pycache__/
