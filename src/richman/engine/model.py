@@ -72,6 +72,9 @@ class GameEngine:
     render for display.
     """
 
+    EVENT_LOG_LIMIT = 200
+    MAX_LANDING_CHAIN_DEPTH = 64
+
     __slots__ = (
         "_acquisition_counter",
         "_board",
@@ -134,6 +137,7 @@ class GameEngine:
 
     def snapshot_for(self, viewer_index: int) -> GameSnapshot:
         """Build a render-oriented snapshot for the given viewer."""
+        self._validate_viewer_index(viewer_index)
         return self._build_snapshot(viewer_index)
 
     def start(self, max_turns: int | None = None) -> InternalGameState:
@@ -147,6 +151,9 @@ class GameEngine:
         while not self._is_game_over():
             ps = self._current_player_state
             if ps.bankrupt:
+                self._check_game_over()
+                if self._is_game_over():
+                    break
                 self._advance_to_next_player()
                 continue
 
@@ -233,8 +240,11 @@ class GameEngine:
     # Phase ③ — landing logic
     # ------------------------------------------------------------------
 
-    def _process_landing(self) -> bool:
+    def _process_landing(self, chain_depth: int = 0) -> bool:
         """Process landing at the current position. Returns True if turn should end."""
+        if chain_depth > self.MAX_LANDING_CHAIN_DEPTH:
+            raise RuntimeError("landing chain depth exceeded")
+
         ps = self._current_player_state
         pos = ps.position
         cell_type = get_cell_type(self._board, pos)
@@ -254,7 +264,7 @@ class GameEngine:
             return self._process_property_landing()
 
         if cell_type is CellType.CHANCE:
-            return self._process_chance_card()
+            return self._process_chance_card(chain_depth)
 
         if cell_type is CellType.GO_TO_JAIL:
             return self._handle_jail_decision()
@@ -269,7 +279,7 @@ class GameEngine:
         template = get_property_template(self._board, pos)
 
         if prop is None:
-            return False
+            raise RuntimeError(f"property state missing for position {pos}")
 
         owner_idx = prop.owner_player_index
 
@@ -323,7 +333,7 @@ class GameEngine:
     # Phase ③ — chance card processing
     # ------------------------------------------------------------------
 
-    def _process_chance_card(self) -> bool:
+    def _process_chance_card(self, chain_depth: int) -> bool:
         """Draw and process a chance card. Returns True if turn should end."""
         ps = self._current_player_state
 
@@ -338,9 +348,9 @@ class GameEngine:
         )
 
         intent = resolve_card_intent(card)
-        return self._execute_card_intent(intent)
+        return self._execute_card_intent(intent, chain_depth)
 
-    def _execute_card_intent(self, intent: CardIntent) -> bool:
+    def _execute_card_intent(self, intent: CardIntent, chain_depth: int = 0) -> bool:
         """Execute a card intent. Returns True if turn should end."""
         ps = self._current_player_state
 
@@ -362,7 +372,7 @@ class GameEngine:
             return self._pay_debt(intent.amount)
 
         if isinstance(intent, MoveIntent):
-            return self._execute_move_intent(intent)
+            return self._execute_move_intent(intent, chain_depth)
 
         if isinstance(intent, GoToJailIntent):
             return self._handle_jail_decision()
@@ -376,7 +386,7 @@ class GameEngine:
 
         return False
 
-    def _execute_move_intent(self, intent: MoveIntent) -> bool:
+    def _execute_move_intent(self, intent: MoveIntent, chain_depth: int) -> bool:
         """Execute a move card. Handles recursive landing chain."""
         ps = self._current_player_state
         direction = intent.direction
@@ -408,7 +418,7 @@ class GameEngine:
             )
 
         # Recursive landing — only phase ③ effects, no phase ④
-        return self._process_landing()
+        return self._process_landing(chain_depth + 1)
 
     # ------------------------------------------------------------------
     # Phase ④ — action phase
@@ -482,10 +492,13 @@ class GameEngine:
 
         if action is Action.BUY:
             template = get_property_template(self._board, pos)
-            if template is None:
+            prop = self._state.properties_by_position.get(pos)
+            if template is None or prop is None:
                 return
+            if prop.owner_player_index is not None:
+                raise ValueError(f"property at position {pos} is already owned")
             ps.cash -= template.price
-            self._add_property(pos, template.price, template.name)
+            self._add_property(pos, template.price)
             self._log(
                 GameEventType.PROPERTY_BOUGHT,
                 player_name=ps.name,
@@ -693,9 +706,11 @@ class GameEngine:
     # Property management
     # ------------------------------------------------------------------
 
-    def _add_property(self, position: int, price: int, name: str) -> None:
+    def _add_property(self, position: int, price: int) -> None:
         ps = self._current_player_state
         prop = self._state.properties_by_position[position]
+        if prop.owner_player_index is not None:
+            raise ValueError(f"property at position {position} is already owned")
         prop.owner_player_index = self._state.current_player_index
         prop.level = 0
         prop.acquired_at = self._acquisition_counter
@@ -761,6 +776,15 @@ class GameEngine:
             return
 
         alive = [ps for ps in self._state.players if not ps.bankrupt]
+        if not alive:
+            self._winner_name = "No winner"
+            self._log(
+                GameEventType.GAME_OVER,
+                winner_name=self._winner_name,
+            )
+            self._renderer.render_game_over(self._winner_name)
+            return
+
         if len(alive) == 1:
             self._winner_name = alive[0].name
             self._log(
@@ -781,6 +805,7 @@ class GameEngine:
         viewer_index: int,
         actions: Sequence[Action] | None = None,
     ) -> PlayerView:
+        self._validate_viewer_index(viewer_index)
         viewer_ps = self._state.players[viewer_index]
         viewer_props = tuple(
             self._copy_property_state(self._state.properties_by_position[ref.position])
@@ -801,6 +826,7 @@ class GameEngine:
         )
 
     def _build_snapshot(self, viewer_index: int) -> GameSnapshot:
+        self._validate_viewer_index(viewer_index)
         viewer_ps = self._state.players[viewer_index]
         viewer_props = tuple(
             self._copy_property_state(self._state.properties_by_position[ref.position])
@@ -837,7 +863,11 @@ class GameEngine:
                         else None
                     ),
                     owner_player_index=(prop.owner_player_index if prop is not None else None),
-                    level=prop.level if prop is not None and prop.level > 0 else None,
+                    level=(
+                        prop.level
+                        if prop is not None and prop.owner_player_index is not None
+                        else None
+                    ),
                 )
             )
         return PublicBoardInfo(cells=tuple(cells))
@@ -867,11 +897,19 @@ class GameEngine:
         return self._state.players[self._state.current_player_index]
 
     def _log(self, event_type: GameEventType, **data: object) -> None:
+        data.setdefault("player_index", self._state.current_player_index)
         self._state.event_log.append(GameEvent(event_type=event_type, data=data))
+        excess = len(self._state.event_log) - self.EVENT_LOG_LIMIT
+        if excess > 0:
+            del self._state.event_log[:excess]
 
     def _render_frame(self) -> None:
         snapshot = self._build_snapshot(self._state.current_player_index)
         self._renderer.render_frame(snapshot)
+
+    def _validate_viewer_index(self, viewer_index: int) -> None:
+        if viewer_index < 0 or viewer_index >= len(self._state.players):
+            raise IndexError("viewer_index is outside player range")
 
     @staticmethod
     def _copy_player_state(player_state: PlayerState) -> PlayerState:

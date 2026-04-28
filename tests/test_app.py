@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
 from richman.app import (
     MAX_PLAYERS,
     MIN_PLAYERS,
+    _parse_simple_yaml,
     build_default_config,
     create_engine,
     create_players,
+    load_config,
     run_game,
 )
 from richman.board import create as create_board
@@ -23,6 +27,40 @@ from richman.render import ConsoleRenderer
 
 def _quiet_renderer() -> ConsoleRenderer:
     return ConsoleRenderer(output=StringIO())
+
+
+def _config_payload() -> dict[str, object]:
+    return {
+        "start_cash": 900,
+        "start_bonus": 75,
+        "jail_rounds": 2,
+        "demolish_range": 1,
+        "dice_sides": 4,
+        "board_cells": [
+            {"type": "START"},
+            {
+                "type": "PROPERTY",
+                "property": {
+                    "name": "测试路",
+                    "price": 100,
+                    "rents": [10, 20, 40, 80],
+                    "upgrade_cost": 50,
+                },
+            },
+            {"type": "CHANCE"},
+            {"type": "JAIL_SPACE"},
+        ],
+        "cards": [
+            {"type": "MONEY_GAIN", "description": "获得奖金", "amount": 50},
+            {
+                "type": "MOVE",
+                "description": "前进一步",
+                "direction": "FORWARD",
+                "min_steps": 1,
+                "max_steps": 1,
+            },
+        ],
+    }
 
 
 def test_default_config_can_create_board_and_contains_playable_content() -> None:
@@ -37,6 +75,75 @@ def test_default_config_can_create_board_and_contains_playable_content() -> None
     assert CellType.PROPERTY in cell_types
     assert CellType.CHANCE in cell_types
     assert config.cards
+
+
+def test_load_config_reads_json_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "game.json"
+    config_path.write_text(json.dumps(_config_payload(), ensure_ascii=False), encoding="utf-8")
+
+    config = load_config(config_path)
+    board = create_board(config)
+
+    assert config.start_cash == 900
+    assert config.start_bonus == 75
+    assert config.cards[1].min_steps == 1
+    assert board.start_position == 0
+
+
+def test_load_config_reads_yaml_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "game.yaml"
+    config_path.write_text(
+        """
+start_cash: 900
+start_bonus: 75
+jail_rounds: 2
+demolish_range: 1
+dice_sides: 4
+board_cells:
+  - type: START
+  - type: PROPERTY
+    property:
+      name: 测试路
+      price: 100
+      rents: [10, 20, 40, 80]
+      upgrade_cost: 50
+  - type: CHANCE
+  - type: JAIL_SPACE
+cards:
+  - type: MONEY_GAIN
+    description: 获得奖金
+    amount: 50
+  - type: MOVE
+    description: 前进一步
+    direction: FORWARD
+    min_steps: 1
+    max_steps: 1
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.start_cash == 900
+    assert config.board_cells[1].property_template is not None
+    assert config.board_cells[1].property_template.name == "测试路"
+
+
+def test_simple_yaml_rejects_non_json_inline_mapping_cleanly() -> None:
+    with pytest.raises(ValueError, match="inline collections"):
+        _parse_simple_yaml("item: {key: value}")
+
+
+def test_simple_yaml_sequence_keeps_plain_colon_scalars() -> None:
+    parsed = _parse_simple_yaml(
+        """
+items:
+  - 12:34
+  - http://example.test/path
+"""
+    )
+
+    assert parsed == {"items": ["12:34", "http://example.test/path"]}
 
 
 def test_create_players_returns_stably_named_ai_players() -> None:
@@ -82,3 +189,18 @@ def test_run_game_returns_bounded_state() -> None:
 
     assert isinstance(state, InternalGameState)
     assert state.turn <= 1
+
+
+def test_run_game_accepts_config_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "game.json"
+    config_path.write_text(json.dumps(_config_payload(), ensure_ascii=False), encoding="utf-8")
+
+    state = run_game(
+        players_count=2,
+        max_turns=0,
+        seed=3,
+        renderer=_quiet_renderer(),
+        config_path=config_path,
+    )
+
+    assert [player.cash for player in state.players] == [900, 900]

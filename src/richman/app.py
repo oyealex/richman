@@ -6,10 +6,16 @@ together. It does not own or mutate game state directly.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from richman.board import create as create_board
 from richman.domain import (
+    DEMOLISH_RANGE,
+    DICE_SIDES,
+    JAIL_ROUNDS,
+    START_BONUS,
     BoardCellDefinition,
     CardDefinition,
     CardType,
@@ -27,6 +33,8 @@ MIN_PLAYERS = 2
 MAX_PLAYERS = 4
 
 _MAX_TURNS_MESSAGE = "max_turns reached before game over"
+_DEFAULT_START_CASH = 2_000
+_YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 def build_default_config() -> GameConfig:
@@ -66,6 +74,26 @@ def build_default_config() -> GameConfig:
     )
 
 
+def load_config(path: str | Path) -> GameConfig:
+    """Load a game configuration from a JSON or small YAML file."""
+
+    config_path = Path(path)
+    suffix = config_path.suffix.lower()
+    raw_text = config_path.read_text(encoding="utf-8")
+
+    if suffix == ".json":
+        raw_config = json.loads(raw_text)
+    elif suffix in _YAML_SUFFIXES:
+        raw_config = _parse_simple_yaml(raw_text)
+    else:
+        raise ValueError("config file must use .json, .yaml, or .yml")
+
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("config root must be a mapping")
+
+    return _parse_game_config(raw_config)
+
+
 def create_players(count: int) -> tuple[Player, ...]:
     """Create AI players for the default app mode."""
 
@@ -93,10 +121,20 @@ def run_game(
     seed: int | None = None,
     renderer: Renderer | None = None,
     config: GameConfig | None = None,
+    config_path: str | Path | None = None,
 ) -> InternalGameState:
     """Run one assembled game and return the final or bounded state."""
 
-    game_config = config if config is not None else build_default_config()
+    if config is not None and config_path is not None:
+        raise ValueError("config and config_path are mutually exclusive")
+
+    if config is not None:
+        game_config = config
+    elif config_path is not None:
+        game_config = load_config(config_path)
+    else:
+        game_config = build_default_config()
+
     game_renderer = renderer if renderer is not None else ConsoleRenderer()
     players = create_players(players_count)
     engine = create_engine(game_config, players, game_renderer, seed=seed)
@@ -107,3 +145,312 @@ def run_game(
         if str(error) != _MAX_TURNS_MESSAGE:
             raise
         return engine.get_state()
+
+
+def _parse_game_config(raw_config: Mapping[object, object]) -> GameConfig:
+    board_cells = tuple(
+        _parse_board_cell(raw_cell, index)
+        for index, raw_cell in enumerate(_required_sequence(raw_config, "board_cells"))
+    )
+    cards = tuple(
+        _parse_card(raw_card, index)
+        for index, raw_card in enumerate(_optional_sequence(raw_config, "cards"))
+    )
+
+    return GameConfig(
+        board_cells=board_cells,
+        cards=cards,
+        start_cash=_optional_int(raw_config, "start_cash", _DEFAULT_START_CASH),
+        start_bonus=_optional_int(raw_config, "start_bonus", START_BONUS),
+        jail_rounds=_optional_int(raw_config, "jail_rounds", JAIL_ROUNDS),
+        demolish_range=_optional_int(
+            raw_config,
+            "demolish_range",
+            DEMOLISH_RANGE,
+        ),
+        dice_sides=_optional_int(raw_config, "dice_sides", DICE_SIDES),
+    )
+
+
+def _parse_board_cell(raw_cell: object, index: int) -> BoardCellDefinition:
+    data = _as_mapping(raw_cell, f"board_cells[{index}]")
+    cell_type = CellType(_required_str(data, ("cell_type", "type"), f"board_cells[{index}]"))
+    raw_template = _optional_value(data, ("property_template", "property"))
+
+    if cell_type is CellType.PROPERTY:
+        if raw_template is None:
+            raise ValueError(f"PROPERTY cell at index {index} requires property template")
+        return BoardCellDefinition(
+            cell_type=cell_type,
+            property_template=_parse_property_template(raw_template, index),
+        )
+
+    if raw_template is not None:
+        raise ValueError(f"non-PROPERTY cell at index {index} must not define property template")
+
+    return BoardCellDefinition(cell_type=cell_type)
+
+
+def _parse_property_template(raw_template: object, index: int) -> PropertyTemplate:
+    data = _as_mapping(raw_template, f"board_cells[{index}].property")
+    rents = tuple(_required_sequence(data, "rents"))
+    if len(rents) != 4:
+        raise ValueError("property rents must define exactly four levels")
+
+    return PropertyTemplate(
+        name=_required_str(data, ("name",), "property"),
+        price=_required_int(data, "price"),
+        rents=(
+            _as_int(rents[0], "rents[0]"),
+            _as_int(rents[1], "rents[1]"),
+            _as_int(rents[2], "rents[2]"),
+            _as_int(rents[3], "rents[3]"),
+        ),
+        upgrade_cost=_required_int(data, "upgrade_cost"),
+    )
+
+
+def _parse_card(raw_card: object, index: int) -> CardDefinition:
+    data = _as_mapping(raw_card, f"cards[{index}]")
+    card_type = CardType(_required_str(data, ("card_type", "type"), f"cards[{index}]"))
+    raw_direction = _optional_value(data, ("direction",))
+    direction = MoveDirection(str(raw_direction)) if raw_direction is not None else None
+
+    return CardDefinition(
+        card_type=card_type,
+        description=_required_str(data, ("description",), f"cards[{index}]"),
+        amount=_optional_int_or_none(data, "amount"),
+        direction=direction,
+        min_steps=_optional_int_or_none(data, "min_steps"),
+        max_steps=_optional_int_or_none(data, "max_steps"),
+    )
+
+
+def _required_sequence(data: Mapping[object, object], key: str) -> Sequence[object]:
+    value = data.get(key)
+    if value is None:
+        raise ValueError(f"config requires {key}")
+    return _as_sequence(value, key)
+
+
+def _optional_sequence(data: Mapping[object, object], key: str) -> Sequence[object]:
+    value = data.get(key)
+    if value is None:
+        return ()
+    return _as_sequence(value, key)
+
+
+def _required_str(
+    data: Mapping[object, object],
+    keys: tuple[str, ...],
+    context: str,
+) -> str:
+    value = _optional_value(data, keys)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{context} requires {keys[0]}")
+    return value
+
+
+def _required_int(data: Mapping[object, object], key: str) -> int:
+    value = data.get(key)
+    if value is None:
+        raise ValueError(f"config requires {key}")
+    return _as_int(value, key)
+
+
+def _optional_int(data: Mapping[object, object], key: str, default: int) -> int:
+    value = data.get(key)
+    if value is None:
+        return default
+    return _as_int(value, key)
+
+
+def _optional_int_or_none(data: Mapping[object, object], key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    return _as_int(value, key)
+
+
+def _optional_value(data: Mapping[object, object], keys: tuple[str, ...]) -> object | None:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
+
+
+def _as_mapping(value: object, context: str) -> Mapping[object, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{context} must be a mapping")
+    return value
+
+
+def _as_sequence(value: object, context: str) -> Sequence[object]:
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError(f"{context} must be a sequence")
+    return value
+
+
+def _as_int(value: object, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{context} must be an integer")
+    return value
+
+
+def _parse_simple_yaml(raw_text: str) -> object:
+    lines = _yaml_lines(raw_text)
+    if not lines:
+        return {}
+
+    value, index = _parse_yaml_block(lines, 0, lines[0][0])
+    if index != len(lines):
+        raise ValueError("invalid YAML indentation")
+    return value
+
+
+def _yaml_lines(raw_text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if "\t" in line:
+            raise ValueError("YAML indentation must use spaces")
+        indent = len(line) - len(line.lstrip(" "))
+        lines.append((indent, line.strip()))
+    return lines
+
+
+def _parse_yaml_block(
+    lines: Sequence[tuple[int, str]],
+    index: int,
+    indent: int,
+) -> tuple[object, int]:
+    if index >= len(lines):
+        return {}, index
+
+    line_indent, text = lines[index]
+    if line_indent != indent:
+        raise ValueError("invalid YAML indentation")
+
+    if text.startswith("- "):
+        return _parse_yaml_sequence(lines, index, indent)
+    return _parse_yaml_mapping(lines, index, indent)
+
+
+def _parse_yaml_mapping(
+    lines: Sequence[tuple[int, str]],
+    index: int,
+    indent: int,
+) -> tuple[dict[str, object], int]:
+    result: dict[str, object] = {}
+
+    while index < len(lines):
+        line_indent, text = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent or text.startswith("- "):
+            raise ValueError("invalid YAML mapping")
+
+        key, raw_value = _split_yaml_key_value(text)
+        index += 1
+        if raw_value:
+            result[key] = _parse_yaml_scalar(raw_value)
+        elif index < len(lines) and lines[index][0] > indent:
+            result[key], index = _parse_yaml_block(lines, index, lines[index][0])
+        else:
+            result[key] = {}
+
+    return result, index
+
+
+def _parse_yaml_sequence(
+    lines: Sequence[tuple[int, str]],
+    index: int,
+    indent: int,
+) -> tuple[list[object], int]:
+    result: list[object] = []
+
+    while index < len(lines):
+        line_indent, text = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent or not text.startswith("- "):
+            raise ValueError("invalid YAML sequence")
+
+        rest = text[2:].strip()
+        index += 1
+        if not rest:
+            if index < len(lines) and lines[index][0] > indent:
+                item, index = _parse_yaml_block(lines, index, lines[index][0])
+            else:
+                item = None
+        elif _looks_like_yaml_key_value(rest):
+            item, index = _parse_yaml_sequence_mapping_item(lines, index, indent, rest)
+        else:
+            item = _parse_yaml_scalar(rest)
+
+        result.append(item)
+
+    return result, index
+
+
+def _parse_yaml_sequence_mapping_item(
+    lines: Sequence[tuple[int, str]],
+    index: int,
+    sequence_indent: int,
+    rest: str,
+) -> tuple[dict[str, object], int]:
+    key, raw_value = _split_yaml_key_value(rest)
+    item: dict[str, object] = {
+        key: _parse_yaml_scalar(raw_value) if raw_value else {},
+    }
+
+    if index < len(lines) and lines[index][0] > sequence_indent:
+        nested, index = _parse_yaml_block(lines, index, lines[index][0])
+        if not isinstance(nested, dict):
+            raise ValueError("YAML sequence mapping continuation must be a mapping")
+        item.update(nested)
+
+    return item, index
+
+
+def _looks_like_yaml_key_value(text: str) -> bool:
+    if text.startswith(("'", '"', "[", "{")):
+        return False
+
+    colon_index = text.find(":")
+    if colon_index <= 0:
+        return False
+    return colon_index == len(text) - 1 or text[colon_index + 1].isspace()
+
+
+def _split_yaml_key_value(text: str) -> tuple[str, str]:
+    if ":" not in text:
+        raise ValueError("YAML mapping entry requires ':'")
+    key, raw_value = text.split(":", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError("YAML mapping key must not be empty")
+    return key, raw_value.strip()
+
+
+def _parse_yaml_scalar(raw_value: str) -> object:
+    value = raw_value.strip()
+    if value in {"null", "Null", "NULL", "~"}:
+        return None
+    if value in {"true", "True", "TRUE"}:
+        return True
+    if value in {"false", "False", "FALSE"}:
+        return False
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    if value.startswith(("[", "{")):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError("YAML inline collections must use JSON syntax") from error
+    try:
+        return int(value)
+    except ValueError:
+        return value

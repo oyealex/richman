@@ -29,7 +29,7 @@ from richman.domain import (
 )
 from richman.engine import GameEngine
 from richman.player import AIPlayer, InputContext
-from richman.render import ConsoleRenderer
+from richman.render import ConsoleRenderer, format_event
 
 # ---------------------------------------------------------------------------
 # Forbidden import check
@@ -276,6 +276,23 @@ class TestMainLoop:
         assert engine._is_game_over()
         assert engine._winner_name == "Alice"
 
+    def test_start_ends_when_no_players_remain(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        players = [AIPlayer("Alice"), AIPlayer("Bob")]
+        engine = GameEngine.create(config, board, players, _make_renderer(), seed=42)
+
+        state = engine.get_state()
+        state.players[0].bankrupt = True
+        state.players[1].bankrupt = True
+
+        final_state = engine.start(max_turns=0)
+
+        assert final_state is state
+        assert engine._is_game_over()
+        assert engine._winner_name == "No winner"
+        assert any(event.event_type == GameEventType.GAME_OVER for event in state.event_log)
+
 
 # ---------------------------------------------------------------------------
 # Five-phase turn flow
@@ -492,6 +509,17 @@ class TestPropertyLanding:
         events = state.event_log
         assert any(e.event_type == GameEventType.PROPERTY_AVAILABLE for e in events)
 
+    def test_property_landing_rejects_missing_property_state(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+        state = engine.get_state()
+        state.players[0].position = 1
+        del state.properties_by_position[1]
+
+        with pytest.raises(RuntimeError, match="property state missing"):
+            engine._process_landing()
+
     def test_own_property_logs_upgradable(self) -> None:
         config = _make_config()
         board = _make_board(config)
@@ -622,6 +650,51 @@ class TestChanceCards:
         assert state.players[0].position != 3
         events = state.event_log
         assert any(e.event_type == GameEventType.PLAYER_MOVED for e in events)
+
+    def test_zero_step_move_card_is_rejected(self) -> None:
+        config = _make_config(
+            cards=(
+                _make_card(
+                    CardType.MOVE,
+                    "原地移动",
+                    direction=MoveDirection.FORWARD,
+                    min_steps=0,
+                    max_steps=0,
+                ),
+            )
+        )
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+        state = engine.get_state()
+        state.players[0].position = 3
+
+        with pytest.raises(ValueError, match="positive"):
+            engine._process_landing()
+
+    def test_move_card_chain_depth_is_bounded(self) -> None:
+        config = GameConfig(
+            board_cells=(
+                BoardCellDefinition(cell_type=CellType.START),
+                BoardCellDefinition(cell_type=CellType.CHANCE),
+                BoardCellDefinition(cell_type=CellType.JAIL_SPACE),
+            ),
+            cards=(
+                _make_card(
+                    CardType.MOVE,
+                    "绕一圈",
+                    direction=MoveDirection.FORWARD,
+                    min_steps=3,
+                    max_steps=3,
+                ),
+            ),
+        )
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+        state = engine.get_state()
+        state.players[0].position = 1
+
+        with pytest.raises(RuntimeError, match="landing chain depth"):
+            engine._process_landing()
 
     def test_move_card_chains_landing_phase_only(self) -> None:
         """Move card should process phase ③ at destination but not phase ④."""
@@ -786,6 +859,26 @@ class TestActions:
 
         actions = engine._compute_actions()
         assert Action.BUY not in actions
+
+    def test_buy_rejects_owned_property_without_mutating_state(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        players = [AIPlayer("Alice"), AIPlayer("Bob")]
+        engine = GameEngine.create(config, board, players, _make_renderer(), seed=42)
+        state = engine.get_state()
+        state.current_player_index = 0
+        state.players[0].position = 1
+        state.players[0].cash = 2000
+        state.properties_by_position[1].owner_player_index = 1
+        state.players[1].holdings.append(PropertyRef(position=1))
+
+        with pytest.raises(ValueError, match="already owned"):
+            engine._execute_action(Action.BUY)
+
+        assert state.players[0].cash == 2000
+        assert state.properties_by_position[1].owner_player_index == 1
+        assert state.players[0].holdings == []
+        assert state.players[1].holdings == [PropertyRef(position=1)]
 
     def test_upgrade_action(self) -> None:
         config = _make_config()
@@ -1079,6 +1172,20 @@ class TestViewGeneration:
         assert state.event_log[0].data["player_name"] == "Alice"
         assert state.event_log[0].data["rents"] == [50, 150]
 
+    def test_engine_log_marks_current_player_for_private_event_formatting(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        players = [AIPlayer("Alice"), AIPlayer("Bob")]
+        engine = GameEngine.create(config, board, players, _make_renderer(), seed=42)
+        state = engine.get_state()
+
+        engine._log(GameEventType.PROPERTY_RECLAIMED, player_name="Alice", refund=100)
+
+        event = state.event_log[-1]
+        assert event.data["player_index"] == 0
+        assert "refund=100" in format_event(event, viewer_index=0)
+        assert "refund=已隐藏" in format_event(event, viewer_index=1)
+
     def test_player_view_includes_private_data(self) -> None:
         config = _make_config()
         board = _make_board(config)
@@ -1122,6 +1229,19 @@ class TestViewGeneration:
         assert cell1.owner_player_index == 0
         assert cell1.level == 2
 
+    def test_public_board_shows_owned_level_zero(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+        state = engine.get_state()
+        state.properties_by_position[1].owner_player_index = 0
+        state.properties_by_position[1].level = 0
+
+        board_info = engine._build_public_board()
+
+        assert board_info.cells[1].owner_player_index == 0
+        assert board_info.cells[1].level == 0
+
     def test_public_board_unowned_no_level(self) -> None:
         config = _make_config()
         board = _make_board(config)
@@ -1132,6 +1252,24 @@ class TestViewGeneration:
 
         assert cell1.owner_player_index is None
         assert cell1.level is None
+
+    def test_snapshot_rejects_invalid_viewer_index(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+
+        with pytest.raises(IndexError, match="viewer_index"):
+            engine.snapshot_for(-1)
+        with pytest.raises(IndexError, match="viewer_index"):
+            engine.snapshot_for(1)
+
+    def test_player_view_rejects_invalid_viewer_index(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+
+        with pytest.raises(IndexError, match="viewer_index"):
+            engine._build_player_view(-1)
 
     def test_snapshot_includes_event_log(self) -> None:
         config = _make_config()
@@ -1165,6 +1303,18 @@ class TestViewGeneration:
         view = engine._build_player_view(0, actions=[Action.BUY, Action.SKIP])
 
         assert view.available_actions == (Action.BUY, Action.SKIP)
+
+    def test_event_log_keeps_recent_events_only(self) -> None:
+        config = _make_config()
+        board = _make_board(config)
+        engine = GameEngine.create(config, board, [AIPlayer("Alice")], _make_renderer(), seed=42)
+        state = engine.get_state()
+
+        for index in range(GameEngine.EVENT_LOG_LIMIT + 5):
+            engine._log(GameEventType.WAIT_DICE, order=index)
+
+        assert len(state.event_log) == GameEngine.EVENT_LOG_LIMIT
+        assert state.event_log[0].data["order"] == 5
 
     def test_input_context_delegates_to_renderer(self) -> None:
         renderer = ConsoleRenderer(output=StringIO(), input_reader=lambda _: "BUY")

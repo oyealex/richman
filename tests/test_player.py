@@ -202,7 +202,11 @@ def test_human_player_choose_demolish_target_rejects_invalid_inputs() -> None:
 
 
 def test_ai_player_wait_for_dice_returns_without_side_effects() -> None:
-    assert AIPlayer("Bot").wait_for_dice() is None
+    player = AIPlayer("Bot")
+
+    player.wait_for_dice()
+
+    assert player.name == "Bot"
 
 
 def test_ai_player_chooses_deterministic_legal_action() -> None:

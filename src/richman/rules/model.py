@@ -137,8 +137,8 @@ def _required_steps(card: CardDefinition, field_name: Literal["min_steps", "max_
     value = card.min_steps if field_name == "min_steps" else card.max_steps
     if value is None:
         raise ValueError(f"MOVE card requires {field_name}")
-    if value < 0:
-        raise ValueError("MOVE card steps must be non-negative")
+    if value <= 0:
+        raise ValueError("MOVE card steps must be positive")
 
     if field_name == "max_steps" and card.min_steps is not None and value < card.min_steps:
         raise ValueError("MOVE card max_steps must be greater than or equal to min_steps")

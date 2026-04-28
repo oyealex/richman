@@ -216,6 +216,13 @@ def test_resolve_card_intent_maps_all_card_types(
         ),
         CardDefinition(
             CardType.MOVE,
+            "零步数",
+            direction=MoveDirection.FORWARD,
+            min_steps=0,
+            max_steps=3,
+        ),
+        CardDefinition(
+            CardType.MOVE,
             "反向范围",
             direction=MoveDirection.FORWARD,
             min_steps=4,
@@ -235,20 +242,20 @@ def test_resolve_card_intent_does_not_mutate_card_definition() -> None:
         CardType.MOVE,
         "随机移动",
         direction=MoveDirection.RANDOM,
-        min_steps=0,
+        min_steps=1,
         max_steps=6,
     )
 
     assert resolve_card_intent(card) == MoveIntent(
         direction=MoveDirection.RANDOM,
-        min_steps=0,
+        min_steps=1,
         max_steps=6,
     )
     assert card == CardDefinition(
         CardType.MOVE,
         "随机移动",
         direction=MoveDirection.RANDOM,
-        min_steps=0,
+        min_steps=1,
         max_steps=6,
     )
 

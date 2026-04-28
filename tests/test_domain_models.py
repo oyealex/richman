@@ -63,7 +63,7 @@ def test_domain_public_api_exports_common_models() -> None:
 
     assert Action.SKIP.value == "SKIP"
     assert PlayerState(name="Alice", cash=2_000).name == "Alice"
-    assert GameSnapshot
+    assert GameSnapshot.__name__ == "GameSnapshot"
 
 
 def test_domain_source_does_not_import_higher_modules() -> None:

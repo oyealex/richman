@@ -1,5 +1,6 @@
 """Command line entry points for Richman."""
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -27,10 +28,22 @@ def play(
         typer.Option("--max-turns", min=0, help="最多运行回合数；省略则运行到游戏结束。"),
     ] = None,
     seed: Annotated[int | None, typer.Option("--seed", help="随机种子。")] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="JSON/YAML 游戏配置文件。",
+        ),
+    ] = None,
 ) -> None:
     """启动一局默认 AI 对局。"""
 
-    run_game(players_count=players, max_turns=max_turns, seed=seed)
+    run_game(players_count=players, max_turns=max_turns, seed=seed, config_path=config)
 
 
 @app.command()

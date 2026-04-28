@@ -113,14 +113,14 @@ def test_render_public_api_exports_contract_and_functions() -> None:
     renderer = ConsoleRenderer(output=StringIO(), input_reader=lambda prompt: "1")
 
     assert isinstance(renderer, Renderer)
-    assert render_frame
-    assert render_event_log
-    assert prompt_choice
-    assert prompt_number
-    assert render_game_over
-    assert format_snapshot
-    assert format_event
-    assert format_event_log
+    assert callable(render_frame)
+    assert callable(render_event_log)
+    assert callable(prompt_choice)
+    assert callable(prompt_number)
+    assert callable(render_game_over)
+    assert callable(format_snapshot)
+    assert callable(format_event)
+    assert callable(format_event_log)
 
 
 def test_render_source_depends_only_on_domain_and_standard_library() -> None:
