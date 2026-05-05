@@ -1,12 +1,12 @@
 # 终端大富翁 — 开发进度记录
 
-最后更新：2026-04-29
+最后更新：2026-05-05
 
 ---
 
 ## 当前状态
 
-当前处于**domain、board、rules、player、render、engine、app 模块已实现，准备归档 app 装配层变更**的阶段。
+当前处于**所有七个模块均已实现并归档，核心玩法可完整运行**的阶段。
 
 已有文档：
 
@@ -27,12 +27,7 @@
 | `implement-player-module` | 已归档 | 实现 `richman.player` 玩家决策边界、HumanPlayer、AIPlayer，并同步主规格 `player-decision-model` |
 | `implement-render-module` | 已归档 | 实现 `richman.render` 渲染边界、默认 console renderer、事件隐私遮蔽、输入原语和 Textual adapter 迁移，并同步主规格 `render-adapter-architecture` |
 | `implement-engine-module` | 已归档 | 实现 `richman.engine` GameEngine、五阶段回合循环、落点处理、机会卡、破产回收、视图裁剪和 InputContext，并同步主规格 `engine-core`/`engine-turn-flow`/`engine-landing`/`engine-bankruptcy`/`engine-view-generation` |
-
-当前活动 OpenSpec 变更：
-
-| 变更 | 状态 | 说明 |
-|---|---|---|
-| `implement-app-module` | 实现完成，待归档 | 实现 `richman.app` 默认配置、玩家创建、engine 装配、受限运行入口和 `richman play` CLI 接入 |
+| `implement-app-module` | 已归档 | 实现 `richman.app` 默认配置、玩家创建、engine 装配、受限运行入口和 `richman play` CLI 接入，并同步主规格 `app-assembly` |
 
 最近一次验证结果：
 
