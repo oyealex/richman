@@ -151,6 +151,36 @@ class GameConfig:
     jail_rounds: int = JAIL_ROUNDS
     demolish_range: int = DEMOLISH_RANGE
     dice_sides: int = DICE_SIDES
+    tui_layout: TuiLayout | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TuiCellLayout:
+    """Visual coordinate of a single board cell in the TUI slot grid."""
+
+    position: int
+    row: int
+    column: int
+
+
+@dataclass(frozen=True, slots=True)
+class TuiRect:
+    """Rectangular region in the TUI slot grid."""
+
+    row: int
+    column: int
+    row_span: int
+    column_span: int
+
+
+@dataclass(frozen=True, slots=True)
+class TuiLayout:
+    """Complete TUI board visual layout configuration."""
+
+    rows: int
+    columns: int
+    center: TuiRect
+    cells: tuple[TuiCellLayout, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,7 +19,13 @@ from richman.app import (
     run_game,
 )
 from richman.board import create as create_board
-from richman.domain import CellType, GameConfig, InternalGameState
+from richman.domain import (
+    CellType,
+    GameConfig,
+    InternalGameState,
+    TuiLayout,
+    TuiRect,
+)
 from richman.engine import GameEngine
 from richman.player import AIPlayer
 from richman.render import ConsoleRenderer
@@ -204,3 +210,142 @@ def test_run_game_accepts_config_path(tmp_path: Path) -> None:
     )
 
     assert [player.cash for player in state.players] == [900, 900]
+
+
+class TestTuiLayoutConfig:
+    def test_default_config_has_non_none_tui_layout(self) -> None:
+        config = build_default_config()
+
+        assert config.tui_layout is not None
+        assert isinstance(config.tui_layout, TuiLayout)
+
+    def test_default_tui_layout_covers_all_board_cells(self) -> None:
+        config = build_default_config()
+        layout = config.tui_layout
+        assert layout is not None
+
+        cell_positions = {cell.position for cell in layout.cells}
+        board_length = len(config.board_cells)
+
+        assert cell_positions == set(range(board_length))
+
+    def test_default_tui_layout_has_valid_structure(self) -> None:
+        config = build_default_config()
+        layout = config.tui_layout
+        assert layout is not None
+
+        assert layout.rows > 0
+        assert layout.columns > 0
+        assert isinstance(layout.center, TuiRect)
+        assert layout.center.row_span > 0
+        assert layout.center.column_span > 0
+        assert len(layout.cells) > 0
+
+        center_r_end = layout.center.row + layout.center.row_span
+        center_c_end = layout.center.column + layout.center.column_span
+
+        for cell in layout.cells:
+            assert 0 <= cell.row < layout.rows
+            assert 0 <= cell.column < layout.columns
+            # Cell must not overlap with center rectangle
+            cell_in_center = (
+                layout.center.row <= cell.row < center_r_end
+                and layout.center.column <= cell.column < center_c_end
+            )
+            assert not cell_in_center, (
+                f"cell position {cell.position} at ({cell.row},{cell.column}) "
+                f"overlaps center"
+            )
+
+    def test_load_json_config_with_tui_layout(self, tmp_path: Path) -> None:
+        payload = {
+            "board_cells": [
+                {"type": "START"},
+                {"type": "JAIL_SPACE"},
+            ],
+            "tui_layout": {
+                "rows": 5,
+                "columns": 7,
+                "center": {
+                    "row": 1,
+                    "column": 1,
+                    "row_span": 3,
+                    "column_span": 5,
+                },
+                "cells": [
+                    {"position": 0, "row": 4, "column": 0},
+                    {"position": 1, "row": 0, "column": 6},
+                ],
+            },
+        }
+        config_path = tmp_path / "game.json"
+        config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        config = load_config(config_path)
+
+        assert config.tui_layout is not None
+        assert config.tui_layout.rows == 5
+        assert config.tui_layout.columns == 7
+        assert config.tui_layout.center.row == 1
+        assert config.tui_layout.center.column == 1
+        assert config.tui_layout.center.row_span == 3
+        assert config.tui_layout.center.column_span == 5
+        assert len(config.tui_layout.cells) == 2
+        assert config.tui_layout.cells[0].position == 0
+        assert config.tui_layout.cells[0].row == 4
+        assert config.tui_layout.cells[0].column == 0
+
+    def test_load_yaml_config_with_tui_layout(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "game.yaml"
+        config_path.write_text(
+            """
+board_cells:
+  - type: START
+  - type: JAIL_SPACE
+tui_layout:
+  rows: 5
+  columns: 7
+  center:
+    row: 1
+    column: 1
+    row_span: 3
+    column_span: 5
+  cells:
+    - position: 0
+      row: 4
+      column: 0
+    - position: 1
+      row: 0
+      column: 6
+""",
+            encoding="utf-8",
+        )
+
+        config = load_config(config_path)
+
+        assert config.tui_layout is not None
+        assert config.tui_layout.rows == 5
+        assert config.tui_layout.columns == 7
+        assert len(config.tui_layout.cells) == 2
+
+    def test_config_without_tui_layout_returns_none(self, tmp_path: Path) -> None:
+        payload = {
+            "board_cells": [
+                {"type": "START"},
+                {"type": "JAIL_SPACE"},
+            ],
+        }
+        config_path = tmp_path / "game.json"
+        config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        config = load_config(config_path)
+
+        assert config.tui_layout is None
+
+    def test_default_tui_layout_no_duplicate_positions(self) -> None:
+        config = build_default_config()
+        layout = config.tui_layout
+        assert layout is not None
+
+        positions = [cell.position for cell in layout.cells]
+        assert len(positions) == len(set(positions))

@@ -30,6 +30,9 @@ from richman.domain import (
     Phase,
     PropertyTemplate,
     RequiredInput,
+    TuiCellLayout,
+    TuiLayout,
+    TuiRect,
 )
 from richman.engine import GameEngine
 from richman.player import AIPlayer, Player
@@ -76,6 +79,28 @@ def build_default_config() -> GameConfig:
             ),
             CardDefinition(CardType.JAIL_PASS, "获得免狱卡"),
             CardDefinition(CardType.DEMOLISH, "获得拆除卡"),
+        ),
+        tui_layout=_default_tui_layout(),
+    )
+
+
+def _default_tui_layout() -> TuiLayout:
+    """Build the default TUI board layout for the 10-cell board."""
+    return TuiLayout(
+        rows=9,
+        columns=13,
+        center=TuiRect(row=2, column=2, row_span=5, column_span=9),
+        cells=(
+            TuiCellLayout(position=0, row=8, column=0),
+            TuiCellLayout(position=1, row=8, column=2),
+            TuiCellLayout(position=2, row=8, column=4),
+            TuiCellLayout(position=3, row=6, column=12),
+            TuiCellLayout(position=4, row=4, column=12),
+            TuiCellLayout(position=5, row=0, column=11),
+            TuiCellLayout(position=6, row=0, column=8),
+            TuiCellLayout(position=7, row=0, column=5),
+            TuiCellLayout(position=8, row=0, column=2),
+            TuiCellLayout(position=9, row=2, column=0),
         ),
     )
 
@@ -251,6 +276,7 @@ def _parse_game_config(raw_config: Mapping[object, object]) -> GameConfig:
             DEMOLISH_RANGE,
         ),
         dice_sides=_optional_int(raw_config, "dice_sides", DICE_SIDES),
+        tui_layout=_parse_tui_layout(raw_config),
     )
 
 
@@ -306,6 +332,50 @@ def _parse_card(raw_card: object, index: int) -> CardDefinition:
         min_steps=_optional_int_or_none(data, "min_steps"),
         max_steps=_optional_int_or_none(data, "max_steps"),
     )
+
+
+def _parse_tui_layout(raw_config: Mapping[object, object]) -> TuiLayout | None:
+    """Parse optional tui_layout section from a game config dict."""
+    raw_layout = raw_config.get("tui_layout")
+    if raw_layout is None:
+        return None
+
+    data = _as_mapping(raw_layout, "tui_layout")
+    rows = _required_int(data, "rows")
+    columns = _required_int(data, "columns")
+
+    raw_center = _required_mapping(data, "center", "tui_layout.center")
+    center = TuiRect(
+        row=_required_int(raw_center, "row"),
+        column=_required_int(raw_center, "column"),
+        row_span=_required_int(raw_center, "row_span"),
+        column_span=_required_int(raw_center, "column_span"),
+    )
+
+    raw_cells = _required_sequence(data, "cells")
+    cells: list[TuiCellLayout] = []
+    for i, raw_cell in enumerate(raw_cells):
+        cell_data = _as_mapping(raw_cell, f"tui_layout.cells[{i}]")
+        cells.append(
+            TuiCellLayout(
+                position=_required_int(cell_data, "position"),
+                row=_required_int(cell_data, "row"),
+                column=_required_int(cell_data, "column"),
+            )
+        )
+
+    return TuiLayout(rows=rows, columns=columns, center=center, cells=tuple(cells))
+
+
+def _required_mapping(
+    data: Mapping[object, object],
+    key: str,
+    context: str,
+) -> Mapping[object, object]:
+    value = data.get(key)
+    if value is None:
+        raise ValueError(f"{context} requires {key}")
+    return _as_mapping(value, f"{context}.{key}")
 
 
 def _required_sequence(data: Mapping[object, object], key: str) -> Sequence[object]:

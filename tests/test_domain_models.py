@@ -40,6 +40,9 @@ from richman.domain import (
     PublicBoardInfo,
     PublicCellInfo,
     PublicPlayerInfo,
+    TuiCellLayout,
+    TuiLayout,
+    TuiRect,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -281,6 +284,95 @@ def test_snapshot_and_player_view_separate_public_and_private_data() -> None:
     assert snapshot.viewer_private_properties[0].upgrade_invested == 150
     assert view.viewer_private.hand.jail_pass == 1
     assert view.available_actions == (Action.UPGRADE, Action.SKIP)
+
+
+class TestTuiLayoutTypes:
+    def test_tui_cell_layout_construction_and_immutability(self) -> None:
+        cell = TuiCellLayout(position=0, row=8, column=0)
+
+        assert cell.position == 0
+        assert cell.row == 8
+        assert cell.column == 0
+
+        with pytest.raises(FrozenInstanceError):
+            _mutate_attribute(cell, "position", 1)
+
+    def test_tui_cell_layout_equality(self) -> None:
+        a = TuiCellLayout(position=0, row=8, column=0)
+        b = TuiCellLayout(position=0, row=8, column=0)
+        c = TuiCellLayout(position=1, row=8, column=0)
+
+        assert a == b
+        assert a != c
+
+    def test_tui_rect_construction_and_immutability(self) -> None:
+        rect = TuiRect(row=2, column=2, row_span=5, column_span=9)
+
+        assert rect.row == 2
+        assert rect.column == 2
+        assert rect.row_span == 5
+        assert rect.column_span == 9
+
+        with pytest.raises(FrozenInstanceError):
+            _mutate_attribute(rect, "row_span", 3)
+
+    def test_tui_layout_construction_and_immutability(self) -> None:
+        cells = (
+            TuiCellLayout(position=0, row=8, column=0),
+            TuiCellLayout(position=1, row=8, column=2),
+        )
+        center = TuiRect(row=2, column=2, row_span=5, column_span=9)
+        layout = TuiLayout(rows=9, columns=13, center=center, cells=cells)
+
+        assert layout.rows == 9
+        assert layout.columns == 13
+        assert layout.center == center
+        assert layout.cells == cells
+        assert len(layout.cells) == 2
+
+        with pytest.raises(FrozenInstanceError):
+            _mutate_attribute(layout, "rows", 10)
+
+    def test_tui_layout_slots_reduce_memory(self) -> None:
+        cell = TuiCellLayout(position=0, row=0, column=0)
+        rect = TuiRect(row=0, column=0, row_span=1, column_span=1)
+        layout = TuiLayout(rows=1, columns=1, center=rect, cells=(cell,))
+
+        assert not hasattr(cell, "__dict__")
+        assert not hasattr(rect, "__dict__")
+        assert not hasattr(layout, "__dict__")
+
+    def test_game_config_default_tui_layout_is_none(self) -> None:
+        config = GameConfig(
+            board_cells=(BoardCellDefinition(CellType.START),),
+            cards=(),
+        )
+
+        assert config.tui_layout is None
+
+    def test_game_config_with_explicit_tui_layout(self) -> None:
+        layout = TuiLayout(
+            rows=5,
+            columns=7,
+            center=TuiRect(row=1, column=1, row_span=3, column_span=5),
+            cells=(TuiCellLayout(position=0, row=4, column=0),),
+        )
+
+        config = GameConfig(
+            board_cells=(BoardCellDefinition(CellType.START),),
+            cards=(),
+            tui_layout=layout,
+        )
+
+        assert config.tui_layout is layout
+        assert config.tui_layout.rows == 5
+
+    def test_tui_layout_types_are_importable_from_package(self) -> None:
+        from richman import domain as domain_pkg
+
+        assert hasattr(domain_pkg, "TuiCellLayout")
+        assert hasattr(domain_pkg, "TuiRect")
+        assert hasattr(domain_pkg, "TuiLayout")
 
 
 def test_event_type_list_covers_module_design_events() -> None:
