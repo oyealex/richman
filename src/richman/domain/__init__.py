@@ -13,6 +13,7 @@ from .models import (
     CellType,
     DeductMoney,
     DeductMoneyIntent,
+    EngineInput,
     GameConfig,
     GameEvent,
     GameEventType,
@@ -22,6 +23,7 @@ from .models import (
     GrantMoney,
     GrantMoneyIntent,
     HandCards,
+    InputKind,
     InternalGameState,
     Move,
     MoveDirection,
@@ -38,6 +40,8 @@ from .models import (
     PublicCellInfo,
     PublicPlayerInfo,
     ReclaimPlan,
+    RequiredInput,
+    StepResult,
 )
 
 __all__ = [
@@ -62,6 +66,8 @@ __all__ = [
     "GrantMoney",
     "GrantMoneyIntent",
     "HandCards",
+    "EngineInput",
+    "InputKind",
     "InternalGameState",
     "Move",
     "MoveDirection",
@@ -77,5 +83,7 @@ __all__ = [
     "PublicBoardInfo",
     "PublicCellInfo",
     "PublicPlayerInfo",
+    "RequiredInput",
     "ReclaimPlan",
+    "StepResult",
 ]

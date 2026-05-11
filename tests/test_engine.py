@@ -21,11 +21,13 @@ from richman.domain import (
     GameConfig,
     GameEventType,
     HandCards,
+    InputKind,
     InternalGameState,
     MoveDirection,
     Phase,
     PlayerView,
     PropertyRef,
+    RequiredInput,
 )
 from richman.engine import GameEngine
 from richman.player import AIPlayer, InputContext
@@ -976,7 +978,7 @@ class TestActions:
 
         actions = engine._compute_actions()
         view = engine._build_player_view(0, actions=actions)
-        choice = engine._players[0].decide(view, actions, engine._context)
+        choice = engine._players[0].decide(view, actions, None)
 
         assert choice == Action.BUY  # AI priority: BUY before SKIP
 
@@ -1316,14 +1318,15 @@ class TestViewGeneration:
         assert len(state.event_log) == GameEngine.EVENT_LOG_LIMIT
         assert state.event_log[0].data["order"] == 5
 
-    def test_input_context_delegates_to_renderer(self) -> None:
-        renderer = ConsoleRenderer(output=StringIO(), input_reader=lambda _: "BUY")
-        config = _make_config()
-        board = _make_board(config)
-        engine = GameEngine.create(config, board, [AIPlayer("Alice")], renderer, seed=42)
+    def test_required_input_exposes_decision_without_renderer_context(self) -> None:
+        required = RequiredInput(
+            kind=InputKind.ACTION_CHOICE,
+            player_index=0,
+            options=(Action.BUY, Action.SKIP),
+        )
 
-        result = engine._context.prompt_choice("选择动作", ["BUY", "SKIP"])
-        assert result == "BUY"
+        assert required.kind is InputKind.ACTION_CHOICE
+        assert required.options == (Action.BUY, Action.SKIP)
 
 
 # ---------------------------------------------------------------------------

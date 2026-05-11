@@ -1,4 +1,9 @@
-## ADDED Requirements
+# engine-landing Specification
+
+## Purpose
+Define landing effects for property, chance, jail, and other board cell types.
+
+## Requirements
 
 ### Requirement: Landing on unowned property offers purchase
 The system SHALL log PROPERTY_AVAILABLE when landing on an unowned PROPERTY cell.

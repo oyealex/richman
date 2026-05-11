@@ -1,4 +1,9 @@
-## ADDED Requirements
+# engine-bankruptcy Specification
+
+## Purpose
+Define how the engine settles debts, reclaims properties, and marks players bankrupt.
+
+## Requirements
 
 ### Requirement: Debt payment with sufficient cash
 The system SHALL deduct the full amount from the player's cash when they can afford it.

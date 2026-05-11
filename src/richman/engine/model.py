@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from collections.abc import Sequence
 from copy import deepcopy
+from enum import StrEnum
 
 from richman.board import (
     Board,
@@ -21,6 +22,7 @@ from richman.domain import (
     CardType,
     CellType,
     DeductMoneyIntent,
+    EngineInput,
     GameConfig,
     GameEvent,
     GameEventType,
@@ -28,6 +30,7 @@ from richman.domain import (
     GoToJailIntent,
     GrantMoneyIntent,
     HandCards,
+    InputKind,
     InternalGameState,
     MoveDirection,
     MoveIntent,
@@ -40,9 +43,10 @@ from richman.domain import (
     PublicBoardInfo,
     PublicCellInfo,
     PublicPlayerInfo,
+    RequiredInput,
+    StepResult,
 )
 from richman.player import Player
-from richman.render import Renderer
 from richman.rules import (
     calculate_bankruptcy,
     calculate_rent,
@@ -52,24 +56,25 @@ from richman.rules import (
 )
 
 
-class _EngineInputContext:
-    """Restricted input surface exposed to players. Only prompt_choice is visible."""
+class _StepCursor(StrEnum):
+    """Internal resumable engine cursor for the public step API."""
 
-    __slots__ = ("_renderer",)
-
-    def __init__(self, renderer: Renderer) -> None:
-        self._renderer = renderer
-
-    def prompt_choice(self, question: str, options: Sequence[str]) -> str:
-        return self._renderer.prompt_choice(question, tuple(options))
+    READY_TO_START_TURN = "READY_TO_START_TURN"
+    WAITING_FOR_ROLL = "WAITING_FOR_ROLL"
+    READY_FOR_LANDING = "READY_FOR_LANDING"
+    READY_FOR_ACTION = "READY_FOR_ACTION"
+    WAITING_FOR_ACTION = "WAITING_FOR_ACTION"
+    WAITING_FOR_DEMOLISH_TARGET = "WAITING_FOR_DEMOLISH_TARGET"
+    WAITING_FOR_JAIL_CHOICE = "WAITING_FOR_JAIL_CHOICE"
+    GAME_OVER = "GAME_OVER"
 
 
 class GameEngine:
-    """Owns InternalGameState and executes the five-phase turn loop.
+    """Owns InternalGameState and exposes a step-based turn loop.
 
     The engine is the only module that mutates game state. It calls board for
-    spatial queries, rules for pure calculations, player for decisions, and
-    render for display.
+    spatial queries, rules for pure calculations, and player strategies for
+    AI decisions. Render and input adapters drive the public ``advance`` API.
     """
 
     EVENT_LOG_LIMIT = 200
@@ -79,12 +84,14 @@ class GameEngine:
         "_acquisition_counter",
         "_board",
         "_config",
-        "_context",
+        "_last_required_input",
         "_jail_position",
+        "_pending_demolish_candidates",
+        "_should_advance_player_before_turn",
         "_players",
-        "_renderer",
         "_rng",
         "_state",
+        "_step_cursor",
         "_winner_name",
     )
 
@@ -93,20 +100,21 @@ class GameEngine:
         config: GameConfig,
         board: Board,
         players: Sequence[Player],
-        renderer: Renderer,
         rng: random.Random,
         jail_position: int,
     ) -> None:
         self._config = config
         self._board = board
         self._players = tuple(players)
-        self._renderer = renderer
         self._rng = rng
         self._jail_position = jail_position
-        self._context = _EngineInputContext(renderer)
+        self._last_required_input: RequiredInput | None = None
+        self._pending_demolish_candidates: tuple[int, ...] = ()
+        self._should_advance_player_before_turn = False
         self._acquisition_counter = 0
         self._winner_name: str | None = None
         self._state = self._init_state()
+        self._step_cursor = _StepCursor.READY_TO_START_TURN
 
     # ------------------------------------------------------------------
     # Public API
@@ -117,10 +125,12 @@ class GameEngine:
         config: GameConfig,
         board: Board,
         players: Sequence[Player],
-        renderer: Renderer,
+        renderer_or_seed: object | None = None,
         seed: int | None = None,
     ) -> GameEngine:
         """Factory with optional determinism seed for reproducible tests."""
+        if seed is None and isinstance(renderer_or_seed, int):
+            seed = renderer_or_seed
         rng = random.Random(seed)
         jail_positions = [
             pos
@@ -129,7 +139,7 @@ class GameEngine:
         ]
         if len(jail_positions) != 1:
             raise ValueError("board must contain exactly one JAIL_SPACE cell")
-        return GameEngine(config, board, players, renderer, rng, jail_positions[0])
+        return GameEngine(config, board, players, rng, jail_positions[0])
 
     def get_state(self) -> InternalGameState:
         """Return the current mutable state tree for debugging/verification."""
@@ -141,7 +151,7 @@ class GameEngine:
         return self._build_snapshot(viewer_index)
 
     def start(self, max_turns: int | None = None) -> InternalGameState:
-        """Run the main game loop to completion and return the final state.
+        """Run the main game loop through the step API and return final state.
 
         Args:
             max_turns: Optional safety limit on total turns processed. ``None``
@@ -149,25 +159,299 @@ class GameEngine:
         """
         turns_taken = 0
         while not self._is_game_over():
-            ps = self._current_player_state
-            if ps.bankrupt:
-                self._check_game_over()
+            if self._step_cursor is _StepCursor.READY_TO_START_TURN:
+                while self._current_player_state.bankrupt and not self._is_game_over():
+                    self._check_game_over()
+                    if not self._is_game_over():
+                        self._advance_to_next_player()
                 if self._is_game_over():
                     break
-                self._advance_to_next_player()
-                continue
 
-            if max_turns is not None and turns_taken >= max_turns:
+            if (
+                self._step_cursor is _StepCursor.READY_TO_START_TURN
+                and max_turns is not None
+                and turns_taken >= max_turns
+            ):
                 raise RuntimeError("max_turns reached before game over")
 
-            self._state.turn += 1
-            self._process_turn()
-            turns_taken += 1
-            if self._is_game_over():
-                break
-            self._advance_to_next_player()
+            result = self.advance()
+            if any(event.event_type is GameEventType.TURN_START for event in result.events):
+                turns_taken += 1
+
+            while result.required_input is not None and not result.game_over:
+                result = self.advance(self._auto_input_for(result.required_input))
 
         return self._state
+
+    def advance(self, engine_input: EngineInput | None = None) -> StepResult:
+        """Advance the game to the next frame, input request, or terminal state."""
+
+        event_start = len(self._state.event_log)
+        if self._step_cursor is _StepCursor.GAME_OVER:
+            self._reject_unexpected_input(engine_input)
+            return self._step_result(event_start)
+
+        if self._step_cursor is _StepCursor.READY_TO_START_TURN:
+            self._reject_unexpected_input(engine_input)
+            return self._begin_turn_step(event_start)
+
+        if self._step_cursor is _StepCursor.WAITING_FOR_ROLL:
+            required = self._require_current_input(InputKind.ROLL_DICE)
+            if engine_input is None:
+                return self._step_result(event_start, required)
+            self._validate_input(engine_input, required)
+            self._roll_and_move()
+            self._last_required_input = None
+            self._step_cursor = _StepCursor.READY_FOR_LANDING
+            return self._step_result(event_start)
+
+        if self._step_cursor is _StepCursor.READY_FOR_LANDING:
+            self._reject_unexpected_input(engine_input)
+            landing_required, turn_ended = self._process_landing_step()
+            if landing_required is not None:
+                self._last_required_input = landing_required
+                self._step_cursor = _StepCursor.WAITING_FOR_JAIL_CHOICE
+                return self._step_result(event_start, landing_required)
+            if turn_ended:
+                self._to_end_phase()
+                self._step_cursor = self._cursor_after_end_phase()
+                return self._step_result(event_start)
+            self._step_cursor = _StepCursor.READY_FOR_ACTION
+            return self._step_result(event_start)
+
+        if self._step_cursor is _StepCursor.READY_FOR_ACTION:
+            self._reject_unexpected_input(engine_input)
+            return self._action_request_or_end_step(event_start)
+
+        if self._step_cursor is _StepCursor.WAITING_FOR_ACTION:
+            required = self._require_current_input(InputKind.ACTION_CHOICE)
+            if engine_input is None:
+                return self._step_result(event_start, required)
+            self._validate_input(engine_input, required)
+            if engine_input.action is None:
+                raise ValueError("action input requires action")
+            self._last_required_input = None
+            return self._execute_action_step(engine_input.action, event_start)
+
+        if self._step_cursor is _StepCursor.WAITING_FOR_DEMOLISH_TARGET:
+            required = self._require_current_input(InputKind.DEMOLISH_TARGET)
+            if engine_input is None:
+                return self._step_result(event_start, required)
+            self._validate_input(engine_input, required)
+            if engine_input.target_position is None:
+                raise ValueError("demolish input requires target_position")
+            self._last_required_input = None
+            self._execute_demolish_target(engine_input.target_position)
+            self._to_end_phase()
+            self._step_cursor = self._cursor_after_end_phase()
+            return self._step_result(event_start)
+
+        if self._step_cursor is _StepCursor.WAITING_FOR_JAIL_CHOICE:
+            required = self._require_current_input(InputKind.JAIL_CHOICE)
+            if engine_input is None:
+                return self._step_result(event_start, required)
+            self._validate_input(engine_input, required)
+            if engine_input.action is None:
+                raise ValueError("jail input requires action")
+            self._last_required_input = None
+            turn_ended = self._execute_jail_decision(engine_input.action)
+            if turn_ended:
+                self._to_end_phase()
+                self._step_cursor = self._cursor_after_end_phase()
+            else:
+                self._step_cursor = _StepCursor.READY_FOR_ACTION
+            return self._step_result(event_start)
+
+        raise RuntimeError(f"unknown step cursor: {self._step_cursor}")
+
+    def _begin_turn_step(self, event_start: int) -> StepResult:
+        if self._should_advance_player_before_turn:
+            self._advance_to_next_player()
+            self._should_advance_player_before_turn = False
+
+        for _ in range(len(self._state.players)):
+            if not self._current_player_state.bankrupt:
+                break
+            self._check_game_over()
+            if self._is_game_over():
+                self._step_cursor = _StepCursor.GAME_OVER
+                return self._step_result(event_start)
+            self._advance_to_next_player()
+
+        self._state.turn += 1
+        ps = self._current_player_state
+        self._state.phase = Phase.EFFECT_UPDATE
+        self._log(GameEventType.TURN_START, player_name=ps.name)
+
+        if ps.jail_rounds_left > 0:
+            ps.jail_rounds_left -= 1
+            self._log(
+                GameEventType.JAIL_TICKED,
+                player_name=ps.name,
+                remaining=ps.jail_rounds_left,
+            )
+            if ps.jail_rounds_left == 0:
+                self._log(GameEventType.JAIL_RELEASED, player_name=ps.name)
+
+        if ps.jail_rounds_left > 0:
+            self._to_end_phase()
+            self._step_cursor = self._cursor_after_end_phase()
+            return self._step_result(event_start)
+
+        self._state.phase = Phase.DICE_ROLL
+        self._log(GameEventType.WAIT_DICE, player_name=ps.name)
+        required = RequiredInput(
+            kind=InputKind.ROLL_DICE,
+            player_index=self._state.current_player_index,
+        )
+        self._last_required_input = required
+        self._step_cursor = _StepCursor.WAITING_FOR_ROLL
+        return self._step_result(event_start, required)
+
+    def _roll_and_move(self) -> None:
+        ps = self._current_player_state
+        dice = self._rng.randint(1, self._config.dice_sides)
+        self._state.dice_value = dice
+        self._log(GameEventType.DICE_ROLLED, value=dice)
+
+        move_result = board_move(self._board, ps.position, dice)
+        old_pos = ps.position
+        ps.position = move_result.new_position
+        self._log(
+            GameEventType.PLAYER_MOVED,
+            player_name=ps.name,
+            from_position=old_pos,
+            to_position=ps.position,
+        )
+
+        if move_result.start_crossings > 0:
+            bonus = move_result.start_crossings * self._config.start_bonus
+            ps.cash += bonus
+            self._log(
+                GameEventType.START_BONUS_GRANTED,
+                player_name=ps.name,
+                crossings=move_result.start_crossings,
+                total_bonus=bonus,
+            )
+
+    def _action_request_or_end_step(self, event_start: int) -> StepResult:
+        self._state.phase = Phase.ACTION
+        actions = self._compute_actions()
+        self._state.available_actions = list(actions)
+        if not actions:
+            self._to_end_phase()
+            self._step_cursor = self._cursor_after_end_phase()
+            return self._step_result(event_start)
+
+        self._log(
+            GameEventType.WAIT_ACTION,
+            available_actions=[a.value for a in actions],
+        )
+        required = RequiredInput(
+            kind=InputKind.ACTION_CHOICE,
+            player_index=self._state.current_player_index,
+            options=tuple(actions),
+        )
+        self._last_required_input = required
+        self._step_cursor = _StepCursor.WAITING_FOR_ACTION
+        return self._step_result(event_start, required)
+
+    def _execute_action_step(self, action: Action, event_start: int) -> StepResult:
+        self._log(
+            GameEventType.ACTION_CHOSEN,
+            player_name=self._current_player_state.name,
+            action=action.value,
+        )
+        if action is Action.USE_DEMOLISH:
+            candidates = tuple(self._demolish_candidates())
+            self._pending_demolish_candidates = candidates
+            required = RequiredInput(
+                kind=InputKind.DEMOLISH_TARGET,
+                player_index=self._state.current_player_index,
+                candidates=candidates,
+            )
+            self._last_required_input = required
+            self._step_cursor = _StepCursor.WAITING_FOR_DEMOLISH_TARGET
+            return self._step_result(event_start, required)
+
+        self._execute_action(action)
+        self._to_end_phase()
+        self._step_cursor = self._cursor_after_end_phase()
+        return self._step_result(event_start)
+
+    def _cursor_after_end_phase(self) -> _StepCursor:
+        if self._is_game_over():
+            return _StepCursor.GAME_OVER
+        self._should_advance_player_before_turn = True
+        return _StepCursor.READY_TO_START_TURN
+
+    def _step_result(
+        self,
+        event_start: int,
+        required_input: RequiredInput | None = None,
+    ) -> StepResult:
+        events = tuple(self._copy_event(event) for event in self._state.event_log[event_start:])
+        return StepResult(
+            snapshot=self._build_snapshot(self._state.current_player_index),
+            events=events,
+            phase=self._state.phase,
+            required_input=required_input,
+            game_over=self._is_game_over(),
+        )
+
+    def _require_current_input(self, expected_kind: InputKind) -> RequiredInput:
+        required = self._last_required_input
+        if required is None or required.kind is not expected_kind:
+            raise RuntimeError(f"engine is not waiting for {expected_kind.value}")
+        return required
+
+    @staticmethod
+    def _reject_unexpected_input(engine_input: EngineInput | None) -> None:
+        if engine_input is not None:
+            raise ValueError("engine is not waiting for input")
+
+    @staticmethod
+    def _validate_input(engine_input: EngineInput, required: RequiredInput) -> None:
+        if engine_input.kind is not required.kind:
+            raise ValueError(
+                f"expected {required.kind.value} input, got {engine_input.kind.value}"
+            )
+        if engine_input.player_index != required.player_index:
+            raise ValueError(
+                f"expected input for player {required.player_index}, "
+                f"got {engine_input.player_index}"
+            )
+        if required.options and engine_input.action not in required.options:
+            raise ValueError(f"action is not available: {engine_input.action}")
+        if required.candidates and engine_input.target_position not in required.candidates:
+            raise ValueError(f"target is not available: {engine_input.target_position}")
+
+    def _auto_input_for(self, required: RequiredInput) -> EngineInput:
+        if required.kind is InputKind.ROLL_DICE:
+            return EngineInput(kind=required.kind, player_index=required.player_index)
+
+        view = self._build_player_view(
+            required.player_index,
+            actions=required.options,
+        )
+        player = self._players[required.player_index]
+        if required.kind in {InputKind.ACTION_CHOICE, InputKind.JAIL_CHOICE}:
+            action = player.decide(view, required.options, None)
+            return EngineInput(
+                kind=required.kind,
+                player_index=required.player_index,
+                action=action,
+            )
+
+        if required.kind is InputKind.DEMOLISH_TARGET:
+            target = player.choose_demolish_target(view, required.candidates, None)
+            return EngineInput(
+                kind=required.kind,
+                player_index=required.player_index,
+                target_position=target,
+            )
+
+        raise ValueError(f"unsupported input kind: {required.kind.value}")
 
     # ------------------------------------------------------------------
     # Main turn loop
@@ -196,7 +480,6 @@ class GameEngine:
 
         # ---- Phase ②: DICE_ROLL ----
         self._state.phase = Phase.DICE_ROLL
-        self._render_frame()
         self._log(GameEventType.WAIT_DICE, player_name=ps.name)
         self._current_player.wait_for_dice()
 
@@ -239,6 +522,85 @@ class GameEngine:
     # ------------------------------------------------------------------
     # Phase ③ — landing logic
     # ------------------------------------------------------------------
+
+    def _process_landing_step(
+        self,
+        chain_depth: int = 0,
+    ) -> tuple[RequiredInput | None, bool]:
+        """Step-safe landing processing.
+
+        Returns a required input when landing effects need an external jail
+        decision, otherwise returns whether the turn should end.
+        """
+
+        if chain_depth > self.MAX_LANDING_CHAIN_DEPTH:
+            raise RuntimeError("landing chain depth exceeded")
+
+        ps = self._current_player_state
+        pos = ps.position
+        cell_type = get_cell_type(self._board, pos)
+
+        self._state.phase = Phase.LANDING
+        self._log(
+            GameEventType.LANDED_ON,
+            player_name=ps.name,
+            cell_type=cell_type.value,
+            position=pos,
+        )
+
+        if cell_type is CellType.START:
+            return None, False
+
+        if cell_type is CellType.PROPERTY:
+            return None, self._process_property_landing()
+
+        if cell_type is CellType.CHANCE:
+            return self._process_chance_card_step(chain_depth)
+
+        if cell_type is CellType.GO_TO_JAIL:
+            return self._jail_required_or_execute()
+
+        return None, False
+
+    def _jail_required_or_execute(self) -> tuple[RequiredInput | None, bool]:
+        ps = self._current_player_state
+        if ps.hand.jail_pass > 0:
+            return (
+                RequiredInput(
+                    kind=InputKind.JAIL_CHOICE,
+                    player_index=self._state.current_player_index,
+                    options=(Action.USE_JAIL_PASS, Action.ACCEPT_JAIL),
+                ),
+                False,
+            )
+
+        self._send_current_player_to_jail()
+        return None, True
+
+    def _execute_jail_decision(self, action: Action) -> bool:
+        if action is Action.USE_JAIL_PASS:
+            ps = self._current_player_state
+            if ps.hand.jail_pass <= 0:
+                raise ValueError("jail pass is not available")
+            ps.hand.jail_pass -= 1
+            self._log(GameEventType.JAIL_PASS_USED, player_name=ps.name)
+            return False
+
+        if action is Action.ACCEPT_JAIL:
+            self._send_current_player_to_jail()
+            return True
+
+        raise ValueError(f"unavailable jail action: {action}")
+
+    def _send_current_player_to_jail(self) -> None:
+        ps = self._current_player_state
+        ps.position = self._jail_position
+        ps.jail_rounds_left = self._config.jail_rounds
+        self._log(
+            GameEventType.PLAYER_SENT_TO_JAIL,
+            player_name=ps.name,
+            jail_position=self._jail_position,
+        )
 
     def _process_landing(self, chain_depth: int = 0) -> bool:
         """Process landing at the current position. Returns True if turn should end."""
@@ -332,6 +694,101 @@ class GameEngine:
     # ------------------------------------------------------------------
     # Phase ③ — chance card processing
     # ------------------------------------------------------------------
+
+    def _process_chance_card_step(
+        self,
+        chain_depth: int,
+    ) -> tuple[RequiredInput | None, bool]:
+        ps = self._current_player_state
+        if not self._config.cards:
+            return None, False
+
+        card = self._rng.choice(self._config.cards)
+        self._log(
+            GameEventType.CARD_DRAWN,
+            player_name=ps.name,
+            card_description=card.description,
+        )
+
+        intent = resolve_card_intent(card)
+        return self._execute_card_intent_step(intent, chain_depth)
+
+    def _execute_card_intent_step(
+        self,
+        intent: CardIntent,
+        chain_depth: int = 0,
+    ) -> tuple[RequiredInput | None, bool]:
+        ps = self._current_player_state
+
+        if isinstance(intent, GrantMoneyIntent):
+            ps.cash += intent.amount
+            self._log(
+                GameEventType.MONEY_GAINED,
+                player_name=ps.name,
+                amount=intent.amount,
+            )
+            return None, False
+
+        if isinstance(intent, DeductMoneyIntent):
+            self._log(
+                GameEventType.MONEY_LOST,
+                player_name=ps.name,
+                amount=intent.amount,
+            )
+            return None, self._pay_debt(intent.amount)
+
+        if isinstance(intent, MoveIntent):
+            return self._execute_move_intent_step(intent, chain_depth)
+
+        if isinstance(intent, GoToJailIntent):
+            return self._jail_required_or_execute()
+
+        if isinstance(intent, ObtainCardIntent):
+            if intent.card_type is CardType.JAIL_PASS:
+                ps.hand.jail_pass += 1
+            elif intent.card_type is CardType.DEMOLISH:
+                ps.hand.demolish += 1
+            return None, False
+
+        return None, False
+
+    def _execute_move_intent_step(
+        self,
+        intent: MoveIntent,
+        chain_depth: int,
+    ) -> tuple[RequiredInput | None, bool]:
+        self._execute_move_intent_move_only(intent)
+        return self._process_landing_step(chain_depth + 1)
+
+    def _execute_move_intent_move_only(self, intent: MoveIntent) -> None:
+        ps = self._current_player_state
+        direction = intent.direction
+        if direction is MoveDirection.RANDOM:
+            direction = self._rng.choice([MoveDirection.FORWARD, MoveDirection.BACKWARD])
+
+        steps = self._rng.randint(intent.min_steps, intent.max_steps)
+        if direction is MoveDirection.BACKWARD:
+            steps = -steps
+
+        move_result = board_move(self._board, ps.position, steps)
+        old_pos = ps.position
+        ps.position = move_result.new_position
+        self._log(
+            GameEventType.PLAYER_MOVED,
+            player_name=ps.name,
+            from_position=old_pos,
+            to_position=ps.position,
+        )
+
+        if move_result.start_crossings > 0:
+            bonus = move_result.start_crossings * self._config.start_bonus
+            ps.cash += bonus
+            self._log(
+                GameEventType.START_BONUS_GRANTED,
+                player_name=ps.name,
+                crossings=move_result.start_crossings,
+                total_bonus=bonus,
+            )
 
     def _process_chance_card(self, chain_depth: int) -> bool:
         """Draw and process a chance card. Returns True if turn should end."""
@@ -432,14 +889,13 @@ class GameEngine:
         if not actions:
             return
 
-        self._render_frame()
         self._log(
             GameEventType.WAIT_ACTION,
             available_actions=[a.value for a in actions],
         )
 
         view = self._build_player_view(self._state.current_player_index, actions=actions)
-        chosen = self._current_player.decide(view, actions, self._context)
+        chosen = self._current_player.decide(view, actions, None)
         if chosen not in actions:
             raise ValueError(f"player chose unavailable action: {chosen}")
 
@@ -531,27 +987,35 @@ class GameEngine:
         # SKIP: nothing happens
 
     def _execute_demolish(self) -> None:
-        ps = self._current_player_state
-        pos = ps.position
+        candidates = self._demolish_candidates()
 
+        if not candidates:
+            return
+
+        view = self._build_player_view(
+            self._state.current_player_index,
+            actions=list(self._state.available_actions or []),
+        )
+        target = self._current_player.choose_demolish_target(view, candidates, None)
+
+        if target not in candidates:
+            raise ValueError(f"invalid demolish target: {target}")
+
+        self._execute_demolish_target(target)
+
+    def _demolish_candidates(self) -> list[int]:
+        pos = self._current_player_state.position
         range_positions = get_range(self._board, pos, self._config.demolish_range)
-        candidates = [
+        return [
             p
             for p in range_positions
             if self._state.properties_by_position.get(p) is not None
             and self._state.properties_by_position[p].level > 0
         ]
 
-        if not candidates:
-            return
-
-        self._render_frame()
-        view = self._build_player_view(
-            self._state.current_player_index,
-            actions=list(self._state.available_actions or []),
-        )
-        target = self._current_player.choose_demolish_target(view, candidates, self._context)
-
+    def _execute_demolish_target(self, target: int) -> None:
+        ps = self._current_player_state
+        candidates = self._demolish_candidates()
         if target not in candidates:
             raise ValueError(f"invalid demolish target: {target}")
 
@@ -583,9 +1047,8 @@ class GameEngine:
 
         if ps.hand.jail_pass > 0:
             actions = [Action.USE_JAIL_PASS, Action.ACCEPT_JAIL]
-            self._render_frame()
             view = self._build_player_view(self._state.current_player_index, actions=actions)
-            decision = self._current_player.decide(view, actions, self._context)
+            decision = self._current_player.decide(view, actions, None)
             if decision not in actions:
                 raise ValueError(f"player chose unavailable jail action: {decision}")
 
@@ -596,14 +1059,7 @@ class GameEngine:
         else:
             decision = Action.ACCEPT_JAIL
 
-        # Go to jail
-        ps.position = self._jail_position
-        ps.jail_rounds_left = self._config.jail_rounds
-        self._log(
-            GameEventType.PLAYER_SENT_TO_JAIL,
-            player_name=ps.name,
-            jail_position=self._jail_position,
-        )
+        self._send_current_player_to_jail()
         return True
 
     # ------------------------------------------------------------------
@@ -782,7 +1238,6 @@ class GameEngine:
                 GameEventType.GAME_OVER,
                 winner_name=self._winner_name,
             )
-            self._renderer.render_game_over(self._winner_name)
             return
 
         if len(alive) == 1:
@@ -791,7 +1246,6 @@ class GameEngine:
                 GameEventType.GAME_OVER,
                 winner_name=alive[0].name,
             )
-            self._renderer.render_game_over(alive[0].name)
 
     def _is_game_over(self) -> bool:
         return self._winner_name is not None
@@ -902,10 +1356,6 @@ class GameEngine:
         excess = len(self._state.event_log) - self.EVENT_LOG_LIMIT
         if excess > 0:
             del self._state.event_log[:excess]
-
-    def _render_frame(self) -> None:
-        snapshot = self._build_snapshot(self._state.current_player_index)
-        self._renderer.render_frame(snapshot)
 
     def _validate_viewer_index(self, viewer_index: int) -> None:
         if viewer_index < 0 or viewer_index >= len(self._state.players):

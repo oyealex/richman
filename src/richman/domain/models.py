@@ -68,6 +68,15 @@ class Phase(StrEnum):
     END = "END"
 
 
+class InputKind(StrEnum):
+    """Structured input requests emitted by the step engine."""
+
+    ROLL_DICE = "ROLL_DICE"
+    ACTION_CHOICE = "ACTION_CHOICE"
+    DEMOLISH_TARGET = "DEMOLISH_TARGET"
+    JAIL_CHOICE = "JAIL_CHOICE"
+
+
 class GameEventType(StrEnum):
     """Event names emitted by the engine and displayed by renderers."""
 
@@ -320,3 +329,34 @@ class GameSnapshot:
     viewer_private_properties: tuple[PropertyState, ...]
     event_log: tuple[GameEvent, ...]
     available_actions: tuple[Action, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RequiredInput:
+    """Input request returned by the step engine when external input is needed."""
+
+    kind: InputKind
+    player_index: int
+    options: tuple[Action, ...] = ()
+    candidates: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EngineInput:
+    """Structured input submitted to the step engine."""
+
+    kind: InputKind
+    player_index: int
+    action: Action | None = None
+    target_position: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StepResult:
+    """One engine frame returned by the step API."""
+
+    snapshot: GameSnapshot
+    events: tuple[GameEvent, ...]
+    phase: Phase
+    required_input: RequiredInput | None
+    game_over: bool

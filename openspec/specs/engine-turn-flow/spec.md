@@ -1,11 +1,18 @@
-## ADDED Requirements
+# engine-turn-flow Specification
 
+## Purpose
+Define the ordered turn phases and the state transitions the engine performs during a player turn.
+## Requirements
 ### Requirement: Turn executes five phases in order
-Each player turn SHALL execute phases in the fixed order: EFFECT_UPDATE → DICE_ROLL → LANDING → ACTION → END.
+Each player turn SHALL progress through phases in the fixed order EFFECT_UPDATE → DICE_ROLL → LANDING → ACTION → END, while allowing step boundaries between phases and at key display points.
 
 #### Scenario: Normal turn flow
-- **WHEN** a non-jailed player starts their turn
-- **THEN** the engine executes phase EFFECT_UPDATE, then DICE_ROLL, then LANDING, then ACTION, then END in that order
+- **WHEN** a non-jailed player starts their turn and valid inputs are supplied
+- **THEN** the engine progresses through phase EFFECT_UPDATE, then DICE_ROLL, then LANDING, then ACTION, then END in that order
+
+#### Scenario: Step boundaries preserve phase order
+- **WHEN** adapter pauses between StepResult frames
+- **THEN** subsequent `advance()` calls MUST resume from the same logical turn flow without skipping or reordering phases
 
 ### Requirement: Phase ① decrements jail counter
 The system SHALL decrement jail_rounds_left by 1 during EFFECT_UPDATE if the player is in jail.
@@ -30,10 +37,14 @@ The system SHALL skip to phase ⑤ directly after phase ① if the player is sti
 - **THEN** the engine proceeds to phase ② DICE_ROLL
 
 ### Requirement: Phase ② rolls dice and moves player
-The system SHALL wait for the player, roll a random dice value, move the player on the board, and grant start bonuses.
+The system SHALL request a dice-roll input, roll a random dice value after valid input is submitted, move the player on the board, and grant start bonuses.
+
+#### Scenario: Dice input requested before roll
+- **WHEN** a non-jailed human player enters phase ②
+- **THEN** engine returns RequiredInput for ROLL_DICE before generating the dice value
 
 #### Scenario: Dice roll produces value in range
-- **WHEN** dice is rolled during phase ②
+- **WHEN** valid dice input is submitted during phase ②
 - **THEN** the value is between 1 and config.dice_sides inclusive
 
 #### Scenario: Player position updates after move
@@ -60,18 +71,24 @@ The system SHALL determine the cell type at the player's position and execute th
 - **THEN** LANDED_ON event is logged and the turn continues with no additional effects
 
 ### Requirement: Phase ④ computes and presents available actions
-The system SHALL compute the set of legal actions for the current player and present them for decision.
+The system SHALL compute legal actions for the current player and expose them through StepResult required input when a decision is needed.
 
-#### Scenario: Actions computed before decision
+#### Scenario: Actions computed before decision request
 - **WHEN** phase ④ is entered
-- **THEN** available_actions is set on InternalGameState before calling player.decide()
+- **THEN** available_actions is set on InternalGameState before StepResult is returned
+- **AND** RequiredInput.options contains the same legal actions
 
 #### Scenario: Empty actions skips decision
 - **WHEN** no actions are available
-- **THEN** player.decide() is not called and the turn proceeds to phase ⑤
+- **THEN** no RequiredInput is returned for action choice and the turn proceeds to phase ⑤
+
+#### Scenario: Submitted action must be legal
+- **WHEN** RequiredInput.options contains BUY and SKIP
+- **AND** caller submits UPGRADE
+- **THEN** engine MUST reject the input
 
 ### Requirement: Phase ⑤ resets turn state and checks victory
-The system SHALL clear dice_value and available_actions, log TURN_END, and check for game over.
+The system SHALL clear dice_value and available_actions, log TURN_END, and check for game over without directly rendering game-over output.
 
 #### Scenario: Turn end cleanup
 - **WHEN** phase ⑤ is entered
@@ -79,4 +96,60 @@ The system SHALL clear dice_value and available_actions, log TURN_END, and check
 
 #### Scenario: Game over detected
 - **WHEN** only one non-bankrupt player remains after phase ⑤
-- **THEN** GAME_OVER event is logged and render_game_over is called
+- **THEN** GAME_OVER event is logged
+- **AND** StepResult.game_over is true
+
+#### Scenario: Engine does not render game over
+- **WHEN** game over is detected
+- **THEN** engine MUST NOT call renderer.render_game_over
+- **AND** adapter is responsible for presenting the winner from StepResult or snapshot events
+
+### Requirement: Turn flow exposes required input points
+系统 SHALL 在所有需要外部输入的节点返回 `RequiredInput`，而不是阻塞调用 player 或 renderer。
+
+#### Scenario: Dice roll requires input
+- **WHEN** 当前人类玩家进入 DICE_ROLL 阶段
+- **THEN** `advance(None)` 返回 `RequiredInput(kind=ROLL_DICE, player_index=<current>)`
+
+#### Scenario: Action choice requires input
+- **WHEN** 当前人类玩家进入 ACTION 阶段且存在合法动作
+- **THEN** `advance(None)` 返回 `RequiredInput(kind=ACTION_CHOICE, options=<legal actions>)`
+
+#### Scenario: Demolish target requires input
+- **WHEN** 当前人类玩家选择 `USE_DEMOLISH` 且存在候选目标
+- **THEN** `advance(input)` 返回 `RequiredInput(kind=DEMOLISH_TARGET, candidates=<candidate positions>)`
+
+#### Scenario: Jail choice requires input
+- **WHEN** 当前人类玩家触发入狱判决且持有免狱卡
+- **THEN** `advance(None)` 返回 `RequiredInput(kind=JAIL_CHOICE, options=(USE_JAIL_PASS, ACCEPT_JAIL))`
+
+### Requirement: Turn flow exposes key display points
+系统 SHALL 在关键展示点返回 StepResult，使 adapter 可以展示事件、播放短动画或暂停。
+
+#### Scenario: Dice result display point
+- **WHEN** engine 接受有效的掷骰输入并生成骰子值
+- **THEN** 返回的 StepResult 包含 `DICE_ROLLED` 事件
+- **AND** snapshot 中的 `dice_value` 为本次骰子值
+
+#### Scenario: Movement display point
+- **WHEN** 骰子或移动卡导致玩家位置变化
+- **THEN** 返回的 StepResult 包含 `PLAYER_MOVED` 事件
+- **AND** snapshot 中公开玩家位置已更新
+
+#### Scenario: Turn end display point
+- **WHEN** 当前玩家回合结束
+- **THEN** 返回的 StepResult 包含 `TURN_END` 事件
+- **AND** phase 为 END
+
+### Requirement: AI turns auto-satisfy required input
+系统 SHALL 能用 AI 策略非阻塞地满足 AI 当前玩家的输入请求。
+
+#### Scenario: AI dice input proceeds without blocking
+- **WHEN** 当前玩家是 AI 且 step 需要 ROLL_DICE
+- **THEN** engine 或 driver 可以立即提交 AI 掷骰输入
+- **AND** 不需要终端输入上下文
+
+#### Scenario: AI action input uses legal options
+- **WHEN** 当前玩家是 AI 且 step 需要 ACTION_CHOICE
+- **THEN** AI 策略 MUST 只从 `RequiredInput.options` 中选择一个动作
+

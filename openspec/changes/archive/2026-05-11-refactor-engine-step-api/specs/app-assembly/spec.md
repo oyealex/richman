@@ -1,32 +1,21 @@
-# app-assembly Specification
+## ADDED Requirements
 
-## Purpose
-Define how the application layer builds configuration, players, engine instances, and CLI game runs.
-## Requirements
-### Requirement: App module provides default game configuration
-系统 SHALL 提供 app 层默认配置构造能力，用于创建一局无需外部配置文件即可运行的游戏。
+### Requirement: App module provides console step driver
+系统 SHALL 提供 console 运行驱动，用于通过 `GameEngine.advance(input)` 推进游戏并保持现有 `richman play` 行为。
 
-#### Scenario: Default config is valid for board creation
-- **WHEN** 调用 app 层默认配置构造函数
-- **THEN** 返回值 MUST 是 `GameConfig`
-- **AND** 该配置 MUST 能被 `board.create(config)` 成功创建为 `Board`
+#### Scenario: Console driver renders each frame
+- **WHEN** console driver 收到 StepResult
+- **THEN** 它使用 StepResult.snapshot 展示当前局面
 
-#### Scenario: Default config contains playable content
-- **WHEN** 检查默认 `GameConfig`
-- **THEN** 配置 MUST 包含一个 START 格、一个 JAIL_SPACE 格、至少一个 PROPERTY 格和至少一个 CHANCE 格
-- **AND** 配置 MUST 包含至少一张机会卡
+#### Scenario: Console driver supplies required input
+- **WHEN** StepResult.required_input 非空且当前玩家需要人类输入
+- **THEN** console driver 收集合法输入并提交给 `advance(input)`
 
-### Requirement: App module creates players
-系统 SHALL 提供 app 层玩家创建能力，用于按调用参数创建可传给 engine 的玩家对象。
+#### Scenario: Console driver auto-advances display-only frames
+- **WHEN** StepResult.required_input 为空且 game_over 为 false
+- **THEN** console driver 可以继续调用 `advance(None)` 推进到下一个 frame
 
-#### Scenario: AI players are created with stable names
-- **WHEN** 调用 app 层玩家创建函数并请求 N 名 AI 玩家
-- **THEN** 返回的玩家数量 MUST 等于 N
-- **AND** 每个玩家名称 MUST 稳定且可展示
-
-#### Scenario: Invalid player count is rejected
-- **WHEN** 调用 app 层玩家创建函数并请求少于 2 名或多于 4 名玩家
-- **THEN** 系统 MUST 报告调用错误
+## MODIFIED Requirements
 
 ### Requirement: App module assembles engine
 系统 SHALL 提供 app 层 engine 装配能力，将配置、棋盘、玩家和随机种子连接到 `GameEngine.create`。
@@ -75,19 +64,3 @@ Define how the application layer builds configuration, players, engine instances
 - **WHEN** 用户使用现有 `richman play` 选项启动游戏
 - **THEN** 命令行参数含义 MUST 与变更前保持一致
 - **AND** 内部实现 MAY 使用 step driver 替代旧同步循环
-
-### Requirement: App module provides console step driver
-系统 SHALL 提供 console 运行驱动，用于通过 `GameEngine.advance(input)` 推进游戏并保持现有 `richman play` 行为。
-
-#### Scenario: Console driver renders each frame
-- **WHEN** console driver 收到 StepResult
-- **THEN** 它使用 StepResult.snapshot 展示当前局面
-
-#### Scenario: Console driver supplies required input
-- **WHEN** StepResult.required_input 非空且当前玩家需要人类输入
-- **THEN** console driver 收集合法输入并提交给 `advance(input)`
-
-#### Scenario: Console driver auto-advances display-only frames
-- **WHEN** StepResult.required_input 为空且 game_over 为 false
-- **THEN** console driver 可以继续调用 `advance(None)` 推进到下一个 frame
-

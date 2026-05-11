@@ -16,14 +16,20 @@ from richman.domain import (
     DICE_SIDES,
     JAIL_ROUNDS,
     START_BONUS,
+    Action,
     BoardCellDefinition,
     CardDefinition,
     CardType,
     CellType,
+    EngineInput,
     GameConfig,
+    GameEventType,
+    InputKind,
     InternalGameState,
     MoveDirection,
+    Phase,
     PropertyTemplate,
+    RequiredInput,
 )
 from richman.engine import GameEngine
 from richman.player import AIPlayer, Player
@@ -106,13 +112,14 @@ def create_players(count: int) -> tuple[Player, ...]:
 def create_engine(
     config: GameConfig,
     players: Sequence[Player],
-    renderer: Renderer,
+    renderer: Renderer | None = None,
     seed: int | None = None,
 ) -> GameEngine:
     """Assemble a GameEngine from app-level dependencies."""
 
+    del renderer
     board = create_board(config)
-    return GameEngine.create(config, board, players, renderer, seed=seed)
+    return GameEngine.create(config, board, players, seed=seed)
 
 
 def run_game(
@@ -135,16 +142,91 @@ def run_game(
     else:
         game_config = build_default_config()
 
-    game_renderer = renderer if renderer is not None else ConsoleRenderer()
     players = create_players(players_count)
-    engine = create_engine(game_config, players, game_renderer, seed=seed)
+    engine = create_engine(game_config, players, seed=seed)
 
     try:
-        return engine.start(max_turns=max_turns)
+        return run_console_game(engine, renderer=renderer, max_turns=max_turns)
     except RuntimeError as error:
         if str(error) != _MAX_TURNS_MESSAGE:
             raise
         return engine.get_state()
+
+
+def run_console_game(
+    engine: GameEngine,
+    renderer: Renderer | None = None,
+    max_turns: int | None = None,
+) -> InternalGameState:
+    """Run an engine through the step-compatible console path."""
+
+    game_renderer = renderer if renderer is not None else ConsoleRenderer()
+    result = None
+
+    while not engine.get_state().event_log or result is None or not result.game_over:
+        state = engine.get_state()
+        if (
+            max_turns is not None
+            and state.turn >= max_turns
+            and (state.turn == 0 or state.phase is Phase.END)
+        ):
+            break
+
+        result = engine.advance()
+        game_renderer.render_frame(result.snapshot)
+
+        while result.required_input is not None and not result.game_over:
+            engine_input = _resolve_console_input(engine, game_renderer, result.required_input)
+            result = engine.advance(engine_input)
+            game_renderer.render_frame(result.snapshot)
+
+        if result.game_over:
+            break
+
+    state = engine.get_state()
+    game_over_events = [
+        event for event in state.event_log if event.event_type is GameEventType.GAME_OVER
+    ]
+    if game_over_events:
+        winner_name = str(game_over_events[-1].data.get("winner_name", ""))
+        game_renderer.render_game_over(winner_name)
+    return state
+
+
+def _resolve_console_input(
+    engine: GameEngine,
+    renderer: Renderer,
+    required: RequiredInput,
+) -> EngineInput:
+    player = engine.get_state().players[required.player_index]
+    # The default app mode creates AI players; auto-satisfy their input so
+    # bounded CLI runs remain non-interactive.
+    if player.name.startswith("AI "):
+        return engine._auto_input_for(required)
+
+    if required.kind is InputKind.ROLL_DICE:
+        renderer.prompt_choice("按 Enter 掷骰", ("ROLL_DICE",))
+        return EngineInput(kind=required.kind, player_index=required.player_index)
+
+    if required.kind in {InputKind.ACTION_CHOICE, InputKind.JAIL_CHOICE}:
+        options = tuple(action.value for action in required.options)
+        selected = renderer.prompt_choice("选择动作", options)
+        return EngineInput(
+            kind=required.kind,
+            player_index=required.player_index,
+            action=Action(selected),
+        )
+
+    if required.kind is InputKind.DEMOLISH_TARGET:
+        options = tuple(str(candidate) for candidate in required.candidates)
+        selected = renderer.prompt_choice("选择拆除目标", options)
+        return EngineInput(
+            kind=required.kind,
+            player_index=required.player_index,
+            target_position=int(selected),
+        )
+
+    raise ValueError(f"unsupported input kind: {required.kind.value}")
 
 
 def _parse_game_config(raw_config: Mapping[object, object]) -> GameConfig:
