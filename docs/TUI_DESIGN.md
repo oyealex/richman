@@ -15,6 +15,17 @@
 | 交互 | 键盘 + 鼠标双通路 |
 | 引擎 | 统一可步进 `GameEngine`，由 Console/TUI/测试驱动 |
 
+### 当前实现状态
+
+以下基础能力已经落地，可作为后续 TUI Widget 实现的稳定依赖：
+
+- Engine step API：`GameEngine.advance(input)`、`StepResult`、`RequiredInput`、`EngineInput`。
+- `tui_layout` 配置模型：`TuiLayout`、`TuiCellLayout`、`TuiRect`，并已接入默认配置与 JSON/YAML 配置加载。
+- TUI layout 校验层：`validate_tui_layout(config)`，用于在渲染前拒绝缺失、重复、越界、覆盖中心区等非法布局。
+- TUI 布局几何计算层：`compute_layout_geometry(config, terminal_size=None)`，用于把 slot 坐标转换为终端字符矩形。
+
+下一步实现重点是 `BoardWidget` / `CellWidget` / `CenterPanel`，先把配置化棋盘真实渲染出来，再继续接完整 TUI step driver。
+
 ---
 
 ## 二、屏幕布局
@@ -77,8 +88,8 @@ tui_layout:
   center:
     row: 2
     column: 3
-    rows: 5
-    columns: 7
+    row_span: 5
+    column_span: 7
   cells:
     - position: 0
       row: 8
@@ -96,7 +107,7 @@ tui_layout:
 | 字段 | 说明 |
 |---|---|
 | `rows` / `columns` | 地图 slot 网格尺寸，slot 不是终端字符，而是一个格子布局单位 |
-| `center` | 中心展示区占用的 slot 矩形 |
+| `center` | 中心展示区占用的 slot 矩形，字段为 `row`、`column`、`row_span`、`column_span` |
 | `cells[].position` | 对应 `board_cells[position]` |
 | `cells[].row` / `column` | 该格子左上角所在 slot 坐标，0 基 |
 
@@ -106,7 +117,7 @@ tui_layout:
 - `position` 不允许重复。
 - `row` / `column` 必须在 `rows` / `columns` 范围内。
 - 棋盘格不可与 `center` 矩形重叠。
-- 棋盘格之间允许不连续，但相邻 position 若在视觉上不相邻，TUI 应在配置校验中给出警告，避免玩家难以理解移动路径。
+- 棋盘格之间允许不连续；相邻 position 的视觉连续性可作为未来 warning，不作为当前阻塞错误。
 - 默认内置地图也应提供 `tui_layout`；若自定义配置缺少布局，TUI 拒绝进入游戏并显示配置错误。
 
 中心展示区固定存在。它不参与移动路径，不占用 `board_cells` position，只用于展示骰子、阶段说明、AI 行动、回合摘要等动态内容。
@@ -123,10 +134,40 @@ tui_layout:
 └──────────┘
 ```
 
-- 默认格子尺寸固定为约 10~12 字符宽、5 行高（面板边框 2 + 内容 3）。
+- 默认格子尺寸固定为 12 字符宽、5 行高（面板边框 2 + 内容 3），slot 水平间距为 1 字符，垂直间距为 0。
 - 当前不做自动缩放。配置化布局必须在固定格子尺寸下计算所需终端尺寸。
 - 如果当前终端尺寸不足，TUI 显示尺寸不足错误页，提示当前尺寸和需要尺寸。
 - 未来可以增加地图滚动，但滚动不是当前设计的主路径。
+
+### 3.2.1 布局几何计算
+
+TUI adapter 使用纯计算层把 `tui_layout` 的 slot 坐标转换为终端字符坐标。该层不依赖 Textual、Rich、engine 或任何 widget。
+
+固定尺寸常量：
+
+```python
+CELL_WIDTH = 12
+CELL_HEIGHT = 5
+CELL_GAP = 1
+```
+
+计算结果：
+
+```python
+@dataclass(frozen=True, slots=True)
+class TuiLayoutGeometry:
+    position_rects: Mapping[int, tuple[int, int, int, int]]
+    center_rect: tuple[int, int, int, int]
+    min_terminal_rows: int
+    min_terminal_cols: int
+    is_terminal_sufficient: bool
+```
+
+- `position_rects[position]` 为 `(top, left, bottom, right)` 半开终端字符矩形。
+- `center_rect` 使用同样的半开矩形语义。
+- 默认 9×13 slot 布局在 12×5 cell 尺寸下需要 `45` 行、`168` 列。
+- `terminal_size=None` 时只计算几何，`is_terminal_sufficient=True`；传入 `(rows, cols)` 时执行尺寸充足性判断。
+- 调用 `compute_layout_geometry()` 前会先执行 `validate_tui_layout()`；若有 error，直接拒绝计算。
 
 ### 3.3 颜色语义
 
@@ -177,9 +218,11 @@ AI 回合时，中心区域显示 AI 的行动描述（"AI-1 掷出 4 → 移动
 
 BoardWidget 当前采用子 Widget 网格布局：
 
-- `BoardWidget` 负责读取 `tui_layout`、校验布局、计算所需终端尺寸。
-- 每个棋盘格是独立 `CellWidget(position)`，根据配置中的 `row` / `column` 放入 slot 网格。
-- 中心展示区是独立 `CenterPanel`，占用 `tui_layout.center` 指定的矩形。
+- `BoardWidget` 接收 `GameSnapshot` 和 `TuiLayoutGeometry`，不直接修改游戏状态。
+- `GameScreen` 或上层装配逻辑负责在进入棋盘渲染前调用 `validate_tui_layout()` 和 `compute_layout_geometry()`。
+- 每个棋盘格是独立 `CellWidget(position)`，根据 `position_rects[position]` 放入终端字符矩形对应的位置。
+- 中心展示区是独立 `CenterPanel`，占用 `center_rect` 指定的矩形。
+- 当前终端尺寸不足时，BoardWidget 显示尺寸不足错误状态，包含当前尺寸和 `min_terminal_rows` / `min_terminal_cols`。
 - `CellWidget` 处理鼠标点击并发出 `CellClicked(position)` 消息。
 - 高亮、禁用、拆除目标候选等状态通过 widget class 或 reactive state 更新。
 - 连续边框、复杂路径连线、单 renderable 精细绘制不作为当前目标；如未来需要，可在不改变 `tui_layout` schema 的前提下替换 BoardWidget 渲染层。
@@ -583,7 +626,10 @@ engine
 
 adapters
   ├─ console: 渲染 StepResult 并收集文本输入
-  ├─ textual_tui: 渲染 StepResult 并通过 Textual 事件提交输入
+  ├─ textual_tui:
+  │   ├─ layout.py: 校验 tui_layout，并计算终端字符几何
+  │   ├─ widgets: BoardWidget / CellWidget / CenterPanel 等 Textual 组件
+  │   └─ app/screens: 渲染 StepResult 并通过 Textual 事件提交输入
   └─ tests/headless: 直接提交预设输入并断言 StepResult
 
 app / cli
@@ -607,7 +653,7 @@ app / cli
 
 2. **TUI 布局由配置驱动**。`tui_layout` 负责视觉坐标；`board_cells` 负责游戏路径。两者通过 `position` 对齐。
 
-3. **当前不做缩放**。BoardWidget 按固定格子尺寸计算需要终端尺寸；不足时显示错误页。滚动可作为未来增强。
+3. **当前不做缩放**。`compute_layout_geometry()` 按 12×5 cell 和 1 字符水平间距计算需要终端尺寸；不足时 BoardWidget 显示错误页。滚动可作为未来增强。
 
 4. **弹出层互斥**。ModalScreen 同一时间最多一个，新 modal 出现前关闭旧 modal；AI toast 可替换旧 toast。
 
@@ -623,19 +669,33 @@ app / cli
 
 ### 10.1 实施依赖
 
-1. Engine 必须先提供统一 step API，渲染适配器才能一致驱动游戏。
-2. Console driver 应先迁移到 step API，验证旧入口行为不变。
-3. `tui_layout` schema 和校验完成后，BoardWidget 才能可靠渲染配置化地图。
-4. BoardWidget 必须先支持 `position → CellWidget` 映射和点击回传，格子详情、拆除目标选择才能实现。
-5. Modal/toast 基础能力完成后，再接事件日志、格子详情、AI 信息和入狱选择。
-6. `richman tui` 入口完成后，再接启动画面、设置画面和完整 GameScreen。
+已完成的基础依赖：
+
+1. Engine 已提供统一 step API，渲染适配器可以一致驱动游戏。
+2. Console driver 已迁移到 step API，用于验证旧入口行为不变。
+3. `tui_layout` schema、默认布局和配置文件解析已完成。
+4. `validate_tui_layout()` 已完成，能在渲染前拒绝非法布局。
+5. `compute_layout_geometry()` 已完成，能生成 `position_rects`、`center_rect`、最小终端尺寸和尺寸充足性结果。
+
+后续建议顺序：
+
+1. BoardWidget 先支持 `position → CellWidget` 映射、中心区渲染和点击回传。
+2. BoardWidget 完成后，再实现格子详情、事件日志、AI 信息、入狱选择等 Modal/toast。
+3. Widget 层稳定后，再接 `GameScreen` 的 step driver 和动作输入控件。
+4. 最后补 `richman tui` 入口、TitleScreen、SetupScreen 和完整屏幕流转。
 
 ### 10.2 验收标准
 
+已完成的基础验收：
+
 - Step API 能完整推进一局游戏；现有规则、board、player、app 测试保持通过。
 - `richman play` 保留现有语义，内部可改为 step driver。
-- 新增 `richman tui` 入口，进入 TitleScreen → SetupScreen → GameScreen。
 - `tui_layout` 校验能发现缺失 position、重复 position、越界坐标、格子与中心区重叠。
+- 固定 cell 尺寸下能计算 `position_rects`、`center_rect`、`min_terminal_rows`、`min_terminal_cols`。
+
+后续 TUI 验收：
+
+- 新增 `richman tui` 入口，进入 TitleScreen → SetupScreen → GameScreen。
 - 终端尺寸不足时显示明确错误页，包含当前尺寸和需要尺寸。
 - BoardWidget 按配置坐标显示所有格子，中心区固定显示动态内容。
 - 点击任意 CellWidget 返回正确 position。

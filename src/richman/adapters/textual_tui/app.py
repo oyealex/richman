@@ -1,12 +1,16 @@
 """Textual TUI adapter for Richman."""
 
-from rich.panel import Panel
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header
 
+from richman.adapters.textual_tui.layout import (
+    TuiLayoutGeometry,
+    compute_layout_geometry,
+)
+from richman.adapters.textual_tui.widgets.board import BoardWidget
+from richman.app import build_default_config
 from richman.domain import (
-    CellType,
+    GameConfig,
     GameSnapshot,
     HandCards,
     Phase,
@@ -15,29 +19,18 @@ from richman.domain import (
     PublicCellInfo,
     PublicPlayerInfo,
 )
-from richman.render import format_snapshot
 
 
 class RichmanTuiApp(App[None]):
-    """Minimal Textual app shell backed by framework-neutral render data."""
+    """Textual TUI app that renders the board via BoardWidget."""
 
     CSS = """
     Screen {
         layout: vertical;
     }
 
-    #content {
+    #board-container {
         height: 1fr;
-        padding: 1 2;
-    }
-
-    #status {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #decision {
-        height: auto;
     }
     """
 
@@ -48,38 +41,55 @@ class RichmanTuiApp(App[None]):
     def __init__(
         self,
         snapshot: GameSnapshot | None = None,
-        decision_prompt: str | None = None,
-        decision_options: tuple[str, ...] = (),
+        config: GameConfig | None = None,
     ) -> None:
         super().__init__()
-        self.snapshot = snapshot or _default_snapshot()
-        self.decision_prompt = decision_prompt
-        self.decision_options = decision_options
+        self.config = config or build_default_config()
+        self.snapshot = snapshot or _default_snapshot(self.config)
+        self._geometry: TuiLayoutGeometry | None = None
+
+    @property
+    def geometry(self) -> TuiLayoutGeometry:
+        if self._geometry is None:
+            self._geometry = compute_layout_geometry(self.config)
+        return self._geometry
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Vertical(id="content"):
-            yield Static(self._snapshot_panel(), id="status")
-            if self.decision_prompt is not None:
-                yield Static(self._decision_panel(), id="decision")
+        terminal_size = (self.size.height, self.size.width)
+        yield BoardWidget(
+            self.snapshot,
+            self.geometry,
+            terminal_size=terminal_size,
+        )
         yield Footer()
 
-    def _snapshot_panel(self) -> Panel:
-        return Panel(format_snapshot(self.snapshot), title="终端大富翁", border_style="green")
-
-    def _decision_panel(self) -> Panel:
-        if self.decision_prompt is None:
-            return Panel("无需输入", title="决策请求", border_style="blue")
-
-        options = "\n".join(f"- {option}" for option in self.decision_options) or "- 无"
-        body = f"玩家: {self.snapshot.viewer_private.name}\n{self.decision_prompt}\n\n{options}"
-        return Panel(body, title="决策请求", border_style="blue")
+    def update_snapshot(self, snapshot: GameSnapshot) -> None:
+        """Refresh the board with a new snapshot (called by step driver)."""
+        self.snapshot = snapshot
+        for board in self.query(BoardWidget):
+            board.update_snapshot(snapshot)
 
 
-def _default_snapshot() -> GameSnapshot:
+def _default_snapshot(config: GameConfig) -> GameSnapshot:
+    """Build a default snapshot whose board cells match *config*."""
+    cells: list[PublicCellInfo] = []
+    for i, cell_def in enumerate(config.board_cells):
+        cells.append(
+            PublicCellInfo(
+                position=i,
+                cell_type=cell_def.cell_type,
+                property_name=(
+                    cell_def.property_template.name
+                    if cell_def.property_template is not None
+                    else None
+                ),
+            )
+        )
+
     player = PlayerState(
         name="玩家",
-        cash=2_000,
+        cash=config.start_cash,
         position=0,
         hand=HandCards(),
     )
@@ -89,9 +99,7 @@ def _default_snapshot() -> GameSnapshot:
         viewer_index=0,
         phase=Phase.EFFECT_UPDATE,
         dice_value=None,
-        public_board=PublicBoardInfo(
-            cells=(PublicCellInfo(position=0, cell_type=CellType.START),),
-        ),
+        public_board=PublicBoardInfo(cells=tuple(cells)),
         public_players=(PublicPlayerInfo(player_index=0, name=player.name, position=0),),
         viewer_private=player,
         viewer_private_properties=(),
