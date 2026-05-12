@@ -85,7 +85,10 @@ def build_default_config() -> GameConfig:
 
 
 def _default_tui_layout() -> TuiLayout:
-    """Build the default TUI board layout for the 10-cell board."""
+    """Build the default TUI board layout for the 10-cell board.
+
+    Cells form a counter-clockwise ring around the center display area.
+    """
     return TuiLayout(
         rows=9,
         columns=13,
