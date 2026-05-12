@@ -6,9 +6,11 @@ the BoardWidget rendering layer. No Textual, Rich, or engine dependencies.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
-from richman.domain import GameConfig, TuiRect
+from richman.domain import GameConfig, TuiLayout, TuiRect
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,3 +138,91 @@ def _validate_center(
                 f"column_span({center.column_span}) = "
                 f"{center.column + center.column_span} > columns({grid_cols})"
             )
+
+
+# -- Cell dimension constants ------------------------------------------------
+
+CELL_WIDTH = 12
+CELL_HEIGHT = 5
+CELL_GAP = 1
+
+
+# -- Layout geometry ---------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TuiLayoutGeometry:
+    """Precomputed terminal-character geometry for a validated TuiLayout.
+
+    All coordinate tuples use (top, left, bottom, right) half-open intervals,
+    consistent with TuiRect's row_span / column_span semantics.
+    """
+
+    position_rects: Mapping[int, tuple[int, int, int, int]]
+    center_rect: tuple[int, int, int, int]
+    min_terminal_rows: int
+    min_terminal_cols: int
+    is_terminal_sufficient: bool
+
+
+def compute_layout_geometry(
+    config: GameConfig,
+    terminal_size: tuple[int, int] | None = None,
+) -> TuiLayoutGeometry:
+    """Compute terminal-character geometry from a validated GameConfig.
+
+    Args:
+        config: GameConfig with a legal tui_layout.  If validation fails a
+            ``ValueError`` is raised before any geometry is computed.
+        terminal_size: ``(rows, cols)`` of the current terminal, or ``None``
+            to skip the sufficiency check (``is_terminal_sufficient`` will be
+            ``True`` unconditionally).
+
+    Returns:
+        TuiLayoutGeometry with position rects, center rect, minimum
+        dimensions, and a sufficiency flag.
+    """
+    # -- validate first -------------------------------------------------
+    validation = validate_tui_layout(config)
+    if validation.errors:
+        raise ValueError(
+            "tui_layout 校验失败，无法计算布局几何:\n"
+            + "\n".join(f"  - {e}" for e in validation.errors)
+        )
+
+    layout: TuiLayout = config.tui_layout  # type: ignore[assignment]
+
+    # -- position rects -------------------------------------------------
+    pos_rects: dict[int, tuple[int, int, int, int]] = {}
+    for cell in layout.cells:
+        top = cell.row * CELL_HEIGHT
+        left = cell.column * (CELL_WIDTH + CELL_GAP)
+        pos_rects[cell.position] = (top, left, top + CELL_HEIGHT, left + CELL_WIDTH)
+
+    # -- center rect ----------------------------------------------------
+    c = layout.center
+    center_rect = (
+        c.row * CELL_HEIGHT,
+        c.column * (CELL_WIDTH + CELL_GAP),
+        (c.row + c.row_span) * CELL_HEIGHT,
+        (c.column + c.column_span) * (CELL_WIDTH + CELL_GAP) - CELL_GAP,
+    )
+
+    # -- minimum terminal dimensions ------------------------------------
+    min_rows = layout.rows * CELL_HEIGHT
+    min_cols = layout.columns * CELL_WIDTH + (layout.columns - 1) * CELL_GAP
+
+    # -- sufficiency ----------------------------------------------------
+    if terminal_size is None:
+        is_sufficient = True
+    else:
+        term_rows, term_cols = terminal_size
+        is_sufficient = term_rows >= min_rows and term_cols >= min_cols
+
+    return TuiLayoutGeometry(
+        position_rects=MappingProxyType(pos_rects),
+        center_rect=center_rect,
+        min_terminal_rows=min_rows,
+        min_terminal_cols=min_cols,
+        is_terminal_sufficient=is_sufficient,
+    )
