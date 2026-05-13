@@ -137,13 +137,16 @@ def create_players(count: int) -> tuple[Player, ...]:
     return tuple(AIPlayer(f"AI {index}") for index in range(1, count + 1))
 
 
-def create_tui_players(players_count: int) -> tuple[Player, ...]:
+def create_tui_players(
+    players_count: int,
+    human_name: str = "玩家",
+) -> tuple[Player, ...]:
     """Create 1 human player + (players_count - 1) AI players for TUI mode."""
 
     if players_count < MIN_PLAYERS or players_count > MAX_PLAYERS:
         raise ValueError(f"players must be between {MIN_PLAYERS} and {MAX_PLAYERS}")
 
-    human = HumanPlayer("玩家")
+    human = HumanPlayer(human_name)
     ai_players = tuple(AIPlayer(f"AI {index}") for index in range(1, players_count))
     return (human, *ai_players)
 
@@ -153,7 +156,11 @@ def run_tui_game(
     seed: int | None = None,
     config_path: str | Path | None = None,
 ) -> None:
-    """Assemble and launch a TUI game."""
+    """Assemble config and launch RichmanTuiApp in game mode.
+
+    Engine and players are deferred — SetupScreen creates them after user
+    confirms player count and name.
+    """
 
     from richman.adapters.textual_tui.app import RichmanTuiApp
 
@@ -162,10 +169,12 @@ def run_tui_game(
     else:
         game_config = build_default_config()
 
-    players = create_tui_players(players_count)
-    engine = create_engine(game_config, players, seed=seed)
-
-    app = RichmanTuiApp(engine=engine, config=game_config, player_controllers=players)
+    app = RichmanTuiApp(
+        config=game_config,
+        seed=seed,
+        player_count=players_count,
+        run_game_mode=True,
+    )
     app.run()
 
 

@@ -10,6 +10,7 @@ from richman.adapters.textual_tui.layout import (
     compute_layout_geometry,
 )
 from richman.adapters.textual_tui.screens.game import GameScreen
+from richman.adapters.textual_tui.screens.title import TitleScreen
 from richman.adapters.textual_tui.widgets.board import BoardWidget
 from richman.app import build_default_config
 from richman.domain import (
@@ -49,12 +50,18 @@ class RichmanTuiApp(App[None]):
         config: GameConfig | None = None,
         engine: GameEngine | None = None,
         player_controllers: Sequence[Player] | None = None,
+        run_game_mode: bool = False,
+        seed: int | None = None,
+        player_count: int = 2,
     ) -> None:
         super().__init__()
         self.config = config or build_default_config()
         self.snapshot = snapshot or _default_snapshot(self.config)
         self._engine = engine
         self._player_controllers = player_controllers
+        self._run_game_mode = run_game_mode
+        self._seed = seed
+        self._player_count = player_count
         self._geometry: TuiLayoutGeometry | None = None
 
     @property
@@ -63,9 +70,22 @@ class RichmanTuiApp(App[None]):
             self._geometry = compute_layout_geometry(self.config)
         return self._geometry
 
+    @property
+    def seed(self) -> int | None:
+        return self._seed
+
+    @property
+    def player_count(self) -> int:
+        return self._player_count
+
     def on_mount(self) -> None:
-        if self._engine is not None and self._player_controllers is not None:
+        if self._run_game_mode:
+            self.run_worker(self._push_title_screen())
+        elif self._engine is not None and self._player_controllers is not None:
             self.run_worker(self._push_game_screen())
+
+    async def _push_title_screen(self) -> None:
+        await self.push_screen(TitleScreen())
 
     async def _push_game_screen(self) -> None:
         engine = self._engine

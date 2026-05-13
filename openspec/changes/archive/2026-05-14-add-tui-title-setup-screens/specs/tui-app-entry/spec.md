@@ -1,40 +1,4 @@
-# tui-app-entry
-
-## Purpose
-
-`richman tui` CLI 命令和 TUI app 装配层，负责解析参数、创建默认配置、启动 RichmanTuiApp 并进入 TitleScreen → SetupScreen → GameScreen 屏幕流。
-
-## Requirements
-
-### Requirement: CLI provides tui subcommand
-
-系统 SHALL 在 `richman` CLI 中提供 `tui` 子命令，接受与 `play` 对齐的参数集，启动 TUI 游戏模式。
-
-#### Scenario: tui --players specifies total player count
-
-- **WHEN** 用户执行 `richman tui --players 3`
-- **THEN** CLI MUST 解析 `players` 为整数 3
-- **AND** `--players` 语义 SHALL 为总玩家数（1 人类 + N-1 AI），与 `play --players`（AI 数量）不同
-
-#### Scenario: tui command accepts seed option
-
-- **WHEN** 用户执行 `richman tui --seed 42`
-- **THEN** CLI MUST 解析 `seed` 为整数 42
-
-#### Scenario: tui command accepts config option
-
-- **WHEN** 用户执行 `richman tui --config /path/to/config.json`
-- **THEN** CLI MUST 解析 `config` 为 Path 对象
-
-#### Scenario: tui command uses defaults when options omitted
-
-- **WHEN** 用户执行 `richman tui`（无任何参数）
-- **THEN** CLI MUST 使用默认值：`players=2`、`seed=None`、`config=None`
-
-#### Scenario: richman play behavior unchanged
-
-- **WHEN** 用户执行 `richman play --players 2`
-- **THEN** 行为 MUST 与变更前完全一致
+## MODIFIED Requirements
 
 ### Requirement: run_tui_game assembles and launches TUI app
 
