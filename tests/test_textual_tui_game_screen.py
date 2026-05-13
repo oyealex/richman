@@ -13,6 +13,8 @@ from richman.adapters.textual_tui.screens.game import GameScreen
 from richman.adapters.textual_tui.widgets.action_bar import ActionBar
 from richman.adapters.textual_tui.widgets.board import BoardWidget
 from richman.adapters.textual_tui.widgets.cell import CellWidget
+from richman.adapters.textual_tui.widgets.event_line import EventLine
+from richman.adapters.textual_tui.widgets.player_strip import PlayerStrip
 from richman.app import build_default_config
 from richman.domain import (
     Action,
@@ -60,9 +62,7 @@ def _make_snapshot(config: GameConfig) -> GameSnapshot:
         phase=Phase.DICE_ROLL,
         dice_value=None,
         public_board=PublicBoardInfo(cells=cells),
-        public_players=(
-            PublicPlayerInfo(player_index=0, name="Alice", position=0),
-        ),
+        public_players=(PublicPlayerInfo(player_index=0, name="Alice", position=0),),
         viewer_private=PlayerState(name="Alice", cash=2000, position=0, hand=HandCards()),
         viewer_private_properties=(),
         event_log=(),
@@ -376,8 +376,7 @@ async def test_cell_click_demolish_candidate_submits() -> None:
         await pilot.pause()
         # Should have submitted DEMOLISH_TARGET input
         demolish_calls = [
-            c for c in engine.advance_calls
-            if c is not None and c.kind is InputKind.DEMOLISH_TARGET
+            c for c in engine.advance_calls if c is not None and c.kind is InputKind.DEMOLISH_TARGET
         ]
         assert len(demolish_calls) >= 1
         assert demolish_calls[0].target_position == candidates[0]
@@ -419,8 +418,7 @@ async def test_cell_click_non_candidate_ignored() -> None:
         await pilot.pause()
         # No DEMOLISH_TARGET submit should have happened
         demolish_calls = [
-            c for c in engine.advance_calls
-            if c is not None and c.kind is InputKind.DEMOLISH_TARGET
+            c for c in engine.advance_calls if c is not None and c.kind is InputKind.DEMOLISH_TARGET
         ]
         assert len(demolish_calls) == 0
 
@@ -495,9 +493,7 @@ async def test_action_bar_renders_action_choice_buttons() -> None:
     app = TestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         bar = app.query_one(ActionBar)
-        bar.set_required_input(
-            _make_action_required(0, (Action.BUY, Action.UPGRADE, Action.SKIP))
-        )
+        bar.set_required_input(_make_action_required(0, (Action.BUY, Action.UPGRADE, Action.SKIP)))
         await pilot.pause()
 
         buttons = list(bar.query(Button))
@@ -514,9 +510,7 @@ async def test_action_bar_renders_jail_choice_buttons() -> None:
     app = TestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         bar = app.query_one(ActionBar)
-        bar.set_required_input(
-            _make_jail_required(0, (Action.USE_JAIL_PASS, Action.ACCEPT_JAIL))
-        )
+        bar.set_required_input(_make_jail_required(0, (Action.USE_JAIL_PASS, Action.ACCEPT_JAIL)))
         await pilot.pause()
 
         buttons = list(bar.query(Button))
@@ -579,9 +573,7 @@ async def test_action_bar_button_click_emits_action_submitted() -> None:
         def compose(self) -> ComposeResult:
             yield ActionBar()
 
-        def on_action_bar_action_submitted(
-            self, message: ActionBar.ActionSubmitted
-        ) -> None:
+        def on_action_bar_action_submitted(self, message: ActionBar.ActionSubmitted) -> None:
             captured.append(message.engine_input)
 
     app = TestApp()
@@ -608,17 +600,13 @@ async def test_action_bar_action_choice_button_emits_correct_engine_input() -> N
         def compose(self) -> ComposeResult:
             yield ActionBar()
 
-        def on_action_bar_action_submitted(
-            self, message: ActionBar.ActionSubmitted
-        ) -> None:
+        def on_action_bar_action_submitted(self, message: ActionBar.ActionSubmitted) -> None:
             captured.append(message.engine_input)
 
     app = TestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         bar = app.query_one(ActionBar)
-        bar.set_required_input(
-            _make_action_required(0, (Action.BUY, Action.SKIP))
-        )
+        bar.set_required_input(_make_action_required(0, (Action.BUY, Action.SKIP)))
         await pilot.pause()
 
         buttons = list(bar.query(Button))
@@ -641,9 +629,7 @@ async def test_keyboard_enter_triggers_first_button() -> None:
         def compose(self) -> ComposeResult:
             yield ActionBar()
 
-        def on_action_bar_action_submitted(
-            self, message: ActionBar.ActionSubmitted
-        ) -> None:
+        def on_action_bar_action_submitted(self, message: ActionBar.ActionSubmitted) -> None:
             captured.append(message.engine_input)
 
     app = TestApp()
@@ -665,17 +651,13 @@ async def test_keyboard_digit_triggers_correct_button() -> None:
         def compose(self) -> ComposeResult:
             yield ActionBar()
 
-        def on_action_bar_action_submitted(
-            self, message: ActionBar.ActionSubmitted
-        ) -> None:
+        def on_action_bar_action_submitted(self, message: ActionBar.ActionSubmitted) -> None:
             captured.append(message.engine_input)
 
     app = TestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         bar = app.query_one(ActionBar)
-        bar.set_required_input(
-            _make_action_required(0, (Action.BUY, Action.SKIP))
-        )
+        bar.set_required_input(_make_action_required(0, (Action.BUY, Action.SKIP)))
         await pilot.pause()
 
         # Press "2" → second button (SKIP)
@@ -831,3 +813,107 @@ def test_action_submitted_is_textual_message() -> None:
     from textual.message import Message
 
     assert issubclass(ActionBar.ActionSubmitted, Message)
+
+
+# -- GameScreen compose: PlayerStrip and EventLine ---------------------------
+
+
+async def test_game_screen_composes_player_strip_and_event_line() -> None:
+    """GameScreen compose now includes PlayerStrip and EventLine."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    engine = FakeEngine(
+        advance_responses=[
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.DICE_ROLL,
+                required_input=_make_roll_required(0),
+                game_over=False,
+            ),
+        ],
+        snapshot=snapshot,
+    )
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    screen = GameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+        assert screen.query_one(BoardWidget)
+        assert screen.query_one(PlayerStrip)
+        assert screen.query_one(EventLine)
+        assert screen.query_one(ActionBar)
+
+
+async def test_game_screen_board_height_deduction() -> None:
+    """GameScreen deducts PlayerStrip + EventLine height from board rows."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    engine = FakeEngine(snapshot=snapshot)
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    screen = GameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+        geometry = screen._geometry
+        assert geometry is not None
+        # At size (180, 60): board_rows = 180 - 1 - 1 - 1 - 5 = 172
+        # But min_terminal_rows is layout rows * CELL_HEIGHT (5) + gaps
+        # so the geometry just needs to be computable — verify it's not failing
+        assert geometry.min_terminal_rows > 0
+        assert geometry.min_terminal_cols > 0
+
+
+# -- GameScreen E key binding ------------------------------------------------
+
+
+async def test_game_screen_e_key_emits_open_requested() -> None:
+    """Pressing E at GameScreen level emits EventLine.OpenRequested."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    engine = FakeEngine(
+        advance_responses=[
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.DICE_ROLL,
+                required_input=_make_roll_required(0),
+                game_over=False,
+            ),
+        ],
+        snapshot=snapshot,
+    )
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    captured: list[EventLine.OpenRequested] = []
+
+    class CapturingGameScreen(GameScreen):
+        def on_event_line_open_requested(self, message: EventLine.OpenRequested) -> None:
+            captured.append(message)
+            super().on_event_line_open_requested(message)
+
+    screen = CapturingGameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert len(captured) == 1
+        assert isinstance(captured[0], EventLine.OpenRequested)

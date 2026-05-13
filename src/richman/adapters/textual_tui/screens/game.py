@@ -16,6 +16,8 @@ from richman.adapters.textual_tui.layout import (
 from richman.adapters.textual_tui.widgets.action_bar import ActionBar
 from richman.adapters.textual_tui.widgets.board import BoardWidget
 from richman.adapters.textual_tui.widgets.cell import CellWidget
+from richman.adapters.textual_tui.widgets.event_line import EventLine
+from richman.adapters.textual_tui.widgets.player_strip import PlayerStrip
 from richman.domain import (
     Action,
     EngineInput,
@@ -29,6 +31,8 @@ from richman.engine.model import GameEngine
 from richman.player import AIPlayer, Player
 
 _HEADER_HEIGHT = 1
+_PLAYER_STRIP_HEIGHT = 1
+_EVENT_LINE_HEIGHT = 1
 _ACTION_BAR_HEIGHT = 5
 
 
@@ -64,8 +68,14 @@ class GameScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
-        # Calculate board-available terminal size (subtract header + action bar)
-        board_rows = self.size.height - _HEADER_HEIGHT - _ACTION_BAR_HEIGHT
+        # Calculate board-available terminal size (subtract header + bars)
+        board_rows = (
+            self.size.height
+            - _HEADER_HEIGHT
+            - _PLAYER_STRIP_HEIGHT
+            - _EVENT_LINE_HEIGHT
+            - _ACTION_BAR_HEIGHT
+        )
         board_cols = self.size.width
         board_terminal_size = (board_rows, board_cols)
 
@@ -74,6 +84,8 @@ class GameScreen(Screen[None]):
 
         snapshot = self._engine.snapshot_for(0)
         yield BoardWidget(snapshot, geometry, terminal_size=board_terminal_size)
+        yield PlayerStrip(snapshot, self._player_controllers)
+        yield EventLine(snapshot)
         yield ActionBar()
 
     # -- mount -------------------------------------------------------------
@@ -112,11 +124,17 @@ class GameScreen(Screen[None]):
     # -- step result application -------------------------------------------
 
     def _apply_step_result(self, result: StepResult) -> None:
-        """Store result and refresh BoardWidget + ActionBar."""
+        """Store result and refresh BoardWidget + ActionBar + PlayerStrip + EventLine."""
         self._current_result = result
 
         for board in self.query(BoardWidget):
             board.update_snapshot(result.snapshot)
+
+        for player_strip in self.query(PlayerStrip):
+            player_strip.update_snapshot(result.snapshot)
+
+        for event_line in self.query(EventLine):
+            event_line.update_snapshot(result.snapshot)
 
         for action_bar in self.query(ActionBar):
             if result.game_over:
@@ -198,6 +216,21 @@ class GameScreen(Screen[None]):
         """Handle action button presses from ActionBar."""
         message.stop()
         self._submit_input(message.engine_input)
+
+    # -- EventLine message handlers ------------------------------------------
+
+    def on_event_line_open_requested(self, message: EventLine.OpenRequested) -> None:
+        """Handle OpenRequested from EventLine click or E key binding."""
+        message.stop()
+        # Future: push EventLogModal screen
+
+    BINDINGS = [("e", "open_event_log", "事件日志")]
+
+    # -- E key handler -------------------------------------------------------
+
+    def action_open_event_log(self) -> None:
+        """E key binding: post EventLine.OpenRequested at screen level."""
+        self.post_message(EventLine.OpenRequested())
 
     # -- helpers -----------------------------------------------------------
 
