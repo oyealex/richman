@@ -125,7 +125,6 @@ class BoardWidget(Widget):
             cell.update_data(cell_info, owner_name, players_on, is_current)
 
     def on_cell_widget_cell_clicked(self, message: CellWidget.CellClicked) -> None:
-        message.stop()
         self._clicked_position = message.position
 
     def _build_error_static(self) -> Static:
