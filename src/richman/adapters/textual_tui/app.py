@@ -1,5 +1,7 @@
 """Textual TUI adapter for Richman."""
 
+from collections.abc import Sequence
+
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header
 
@@ -7,6 +9,7 @@ from richman.adapters.textual_tui.layout import (
     TuiLayoutGeometry,
     compute_layout_geometry,
 )
+from richman.adapters.textual_tui.screens.game import GameScreen
 from richman.adapters.textual_tui.widgets.board import BoardWidget
 from richman.app import build_default_config
 from richman.domain import (
@@ -19,6 +22,8 @@ from richman.domain import (
     PublicCellInfo,
     PublicPlayerInfo,
 )
+from richman.engine import GameEngine
+from richman.player import Player
 
 
 class RichmanTuiApp(App[None]):
@@ -42,10 +47,14 @@ class RichmanTuiApp(App[None]):
         self,
         snapshot: GameSnapshot | None = None,
         config: GameConfig | None = None,
+        engine: GameEngine | None = None,
+        player_controllers: Sequence[Player] | None = None,
     ) -> None:
         super().__init__()
         self.config = config or build_default_config()
         self.snapshot = snapshot or _default_snapshot(self.config)
+        self._engine = engine
+        self._player_controllers = player_controllers
         self._geometry: TuiLayoutGeometry | None = None
 
     @property
@@ -53,6 +62,19 @@ class RichmanTuiApp(App[None]):
         if self._geometry is None:
             self._geometry = compute_layout_geometry(self.config)
         return self._geometry
+
+    def on_mount(self) -> None:
+        if self._engine is not None and self._player_controllers is not None:
+            self.run_worker(self._push_game_screen())
+
+    async def _push_game_screen(self) -> None:
+        engine = self._engine
+        player_controllers = self._player_controllers
+        if engine is None or player_controllers is None:
+            return
+        await self.push_screen(
+            GameScreen(engine, self.config, player_controllers)
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)

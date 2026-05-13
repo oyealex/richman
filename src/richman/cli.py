@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from richman import __app_name__, __version__
-from richman.app import MAX_PLAYERS, MIN_PLAYERS, run_game
+from richman.app import MAX_PLAYERS, MIN_PLAYERS, run_game, run_tui_game
 
 app = typer.Typer(add_completion=False, help="终端大富翁开发入口。")
 
@@ -44,6 +44,37 @@ def play(
     """启动一局默认 AI 对局。"""
 
     run_game(players_count=players, max_turns=max_turns, seed=seed, config_path=config)
+
+
+@app.command()
+def tui(
+    players: Annotated[
+        int,
+        typer.Option(
+            "--players",
+            "-p",
+            min=MIN_PLAYERS,
+            max=MAX_PLAYERS,
+            help="总玩家数（1 人类 + N-1 AI）。",
+        ),
+    ] = MIN_PLAYERS,
+    seed: Annotated[int | None, typer.Option("--seed", help="随机种子。")] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="JSON/YAML 游戏配置文件。",
+        ),
+    ] = None,
+) -> None:
+    """启动一局 TUI 游戏（默认 1 人类 + 1 AI）。"""
+
+    run_tui_game(players_count=players, seed=seed, config_path=config)
 
 
 @app.command()
