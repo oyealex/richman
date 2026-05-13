@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TitleScreen 展示欢迎画面，用户按键后进入 SetupScreen。
+TitleScreen 是 TUI 启动后的欢迎入口屏幕，负责展示游戏标题和开始提示，并在用户确认后进入 SetupScreen。该屏幕不创建 engine、不修改游戏状态，只承担屏幕流转入口职责。
 
 ## Requirements
 
