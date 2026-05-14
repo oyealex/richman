@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.reactive import Reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -18,6 +19,8 @@ class BoardWidget(Widget):
     Receives a GameSnapshot and precomputed TuiLayoutGeometry.  When the
     terminal is too small it renders an error message instead of the grid.
     """
+
+    highlight_positions: Reactive[frozenset[int]] = Reactive(frozenset())
 
     DEFAULT_CSS = """
     BoardWidget {
@@ -126,6 +129,15 @@ class BoardWidget(Widget):
 
     def on_cell_widget_cell_clicked(self, message: CellWidget.CellClicked) -> None:
         self._clicked_position = message.position
+
+    def set_highlight_positions(self, positions: frozenset[int]) -> None:
+        """Sync entry: set reactive attribute to trigger watcher update."""
+        self.highlight_positions = positions  # type: ignore[assignment]
+
+    async def watch_highlight_positions(self, positions: frozenset[int]) -> None:
+        """Add or remove candidate CSS class on CellWidgets."""
+        for cell in self.query(CellWidget):
+            cell.set_class(cell.position in positions, "candidate")
 
     def _build_error_static(self) -> Static:
         rows = self._geometry.min_terminal_rows

@@ -238,9 +238,11 @@ class GameEngine:
             if engine_input is None:
                 return self._step_result(event_start, required)
             self._validate_input(engine_input, required)
-            if engine_input.target_position is None:
-                raise ValueError("demolish input requires target_position")
             self._last_required_input = None
+            if engine_input.target_position is None:
+                # None target_position = cancel demolish, return to action phase
+                self._step_cursor = _StepCursor.READY_FOR_ACTION
+                return self._step_result(event_start)
             self._execute_demolish_target(engine_input.target_position)
             self._to_end_phase()
             self._step_cursor = self._cursor_after_end_phase()
@@ -424,7 +426,15 @@ class GameEngine:
         if required.options and engine_input.action not in required.options:
             raise ValueError(f"action is not available: {engine_input.action}")
         if required.candidates and engine_input.target_position not in required.candidates:
-            raise ValueError(f"target is not available: {engine_input.target_position}")
+            # target_position=None for DEMOLISH_TARGET means cancel — skip candidate check
+            is_demolish_cancel = (
+                required.kind is InputKind.DEMOLISH_TARGET
+                and engine_input.target_position is None
+            )
+            if not is_demolish_cancel:
+                raise ValueError(
+                    f"target is not available: {engine_input.target_position}"
+                )
 
     def _auto_input_for(self, required: RequiredInput) -> EngineInput:
         if required.kind is InputKind.ROLL_DICE:

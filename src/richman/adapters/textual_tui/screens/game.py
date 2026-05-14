@@ -62,6 +62,7 @@ class GameScreen(Screen[None]):
         self._player_controllers = tuple(player_controllers)
         self._current_result: StepResult | None = None
         self._geometry: TuiLayoutGeometry | None = None
+        self._pending_human = asyncio.Event()
 
     # -- compose -----------------------------------------------------------
 
@@ -96,7 +97,7 @@ class GameScreen(Screen[None]):
     # -- advance loop ------------------------------------------------------
 
     async def _advance_loop(self) -> None:
-        """Async worker: advance through non-input steps, stop on human input or game over."""
+        """Async worker: advance through non-input steps, wait on human input."""
         while True:
             # Advance through steps that don't require input
             while True:
@@ -116,10 +117,12 @@ class GameScreen(Screen[None]):
                 self._apply_step_result(result)
                 if result.game_over:
                     return
-                # Continue the outer loop (advance None again)
+                # Continue the outer loop (auto-advance further or handle next AI required_input)
             else:
-                # Human input needed — stop and wait for UI interaction
-                return
+                # Human input needed — wait for UI interaction
+                await self._pending_human.wait()
+                self._pending_human.clear()
+                # Loop continues: auto-advance from where _submit_input left off
 
     # -- step result application -------------------------------------------
 
@@ -129,6 +132,16 @@ class GameScreen(Screen[None]):
 
         for board in self.query(BoardWidget):
             board.update_snapshot(result.snapshot)
+
+        # Set highlight positions for DEMOLISH_TARGET candidates, clear otherwise
+        highlight: frozenset[int] = frozenset()
+        if (
+            result.required_input is not None
+            and result.required_input.kind is InputKind.DEMOLISH_TARGET
+        ):
+            highlight = frozenset(result.required_input.candidates)
+        for board in self.query(BoardWidget):
+            board.set_highlight_positions(highlight)
 
         for player_strip in self.query(PlayerStrip):
             player_strip.update_snapshot(result.snapshot)
@@ -185,11 +198,20 @@ class GameScreen(Screen[None]):
     # -- human input submission --------------------------------------------
 
     def _submit_input(self, engine_input: EngineInput) -> None:
-        """Advance the engine with user input, then continue auto-advancing."""
+        """Advance the engine with user input, resume loop if no further human input."""
         result = self._engine.advance(engine_input)
         self._apply_step_result(result)
-        if result.required_input is None and not result.game_over:
-            self.run_worker(self._advance_loop(), exclusive=True)
+
+        if result.game_over:
+            return
+
+        # If the next step needs human input, keep waiting; otherwise resume loop
+        if result.required_input is not None and not self._is_ai_player(
+            result.required_input.player_index
+        ):
+            return  # More human input needed — don't set event
+
+        self._pending_human.set()
 
     # -- BoardWidget click → DEMOLISH_TARGET --------------------------------
 
@@ -224,13 +246,31 @@ class GameScreen(Screen[None]):
         message.stop()
         # Future: push EventLogModal screen
 
-    BINDINGS = [("e", "open_event_log", "事件日志")]
+    BINDINGS = [
+        ("e", "open_event_log", "事件日志"),
+        ("escape", "cancel_demolish", "取消拆除"),
+    ]
 
     # -- E key handler -------------------------------------------------------
 
     def action_open_event_log(self) -> None:
         """E key binding: post EventLine.OpenRequested at screen level."""
         self.post_message(EventLine.OpenRequested())
+
+    def action_cancel_demolish(self) -> None:
+        """Esc key binding: submit cancel EngineInput during DEMOLISH_TARGET."""
+        if self._current_result is None:
+            return
+        required = self._current_result.required_input
+        if required is None or required.kind is not InputKind.DEMOLISH_TARGET:
+            return
+        self._submit_input(
+            EngineInput(
+                kind=InputKind.DEMOLISH_TARGET,
+                player_index=required.player_index,
+                target_position=None,
+            )
+        )
 
     # -- helpers -----------------------------------------------------------
 

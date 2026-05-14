@@ -42,6 +42,9 @@ class CellWidget(Static):
     CellWidget.current {
         border: thick $success;
     }
+    CellWidget.candidate {
+        border: thick $warning;
+    }
     """
 
     def __init__(

@@ -95,7 +95,7 @@ class ActionBar(Widget):
             for i, action in enumerate(required.options):
                 btn_id = f"btn-action-{i}"
                 label = _ACTION_LABELS.get(action, action.value)
-                btn = Button(label, id=btn_id)
+                btn = Button(f"[{i + 1}] {label}", id=btn_id)
                 ei = EngineInput(
                     kind=required.kind,
                     player_index=required.player_index,
@@ -106,7 +106,7 @@ class ActionBar(Widget):
 
         elif required.kind is InputKind.DEMOLISH_TARGET:
             candidates_str = ", ".join(str(c) for c in required.candidates)
-            hint = Static(f"请点击棋盘上的目标格子: {candidates_str}")
+            hint = Static(f"请点击棋盘上的目标格子: {candidates_str}   [Esc 取消]")
             await self.mount(hint)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

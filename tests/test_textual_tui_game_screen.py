@@ -9,6 +9,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Static
 
+from richman.adapters.textual_tui.layout import compute_layout_geometry
 from richman.adapters.textual_tui.screens.game import GameScreen
 from richman.adapters.textual_tui.widgets.action_bar import ActionBar
 from richman.adapters.textual_tui.widgets.board import BoardWidget
@@ -917,3 +918,420 @@ async def test_game_screen_e_key_emits_open_requested() -> None:
         await pilot.pause()
         assert len(captured) == 1
         assert isinstance(captured[0], EventLine.OpenRequested)
+
+
+# -- ActionBar label format tests (numbered shortcuts) -----------------------
+
+
+async def test_action_bar_labels_have_number_prefix() -> None:
+    """ACTION_CHOICE buttons have [1] [2] number prefixes."""
+
+    class TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield ActionBar()
+
+    app = TestApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        bar = app.query_one(ActionBar)
+        bar.set_required_input(_make_action_required(0, (Action.BUY, Action.SKIP)))
+        await pilot.pause()
+
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 2
+        labels = [str(b.label) for b in buttons]
+        assert labels[0] == "[1] 购买"
+        assert labels[1] == "[2] 跳过"
+
+
+async def test_action_bar_labels_four_actions() -> None:
+    """Four ACTION_CHOICE buttons have sequential [1]-[4] prefixes."""
+    class TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield ActionBar()
+
+    app = TestApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        bar = app.query_one(ActionBar)
+        bar.set_required_input(
+            _make_action_required(
+                0, (Action.BUY, Action.UPGRADE, Action.USE_DEMOLISH, Action.SKIP)
+            )
+        )
+        await pilot.pause()
+
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 4
+        labels = [str(b.label) for b in buttons]
+        assert labels[0] == "[1] 购买"
+        assert labels[1] == "[2] 升级"
+        assert labels[2] == "[3] 拆除"
+        assert labels[3] == "[4] 跳过"
+
+
+async def test_action_bar_jail_choice_labels_have_number_prefix() -> None:
+    """JAIL_CHOICE buttons have [1] [2] number prefixes."""
+    class TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield ActionBar()
+
+    app = TestApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        bar = app.query_one(ActionBar)
+        bar.set_required_input(
+            _make_jail_required(0, (Action.USE_JAIL_PASS, Action.ACCEPT_JAIL))
+        )
+        await pilot.pause()
+
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 2
+        labels = [str(b.label) for b in buttons]
+        assert labels[0] == "[1] 出狱卡"
+        assert labels[1] == "[2] 接受入狱"
+
+
+async def test_action_bar_demolish_hint_shows_esc_cancel() -> None:
+    """DEMOLISH_TARGET hint includes Esc cancel instruction."""
+    class TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield ActionBar()
+
+    app = TestApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        bar = app.query_one(ActionBar)
+        bar.set_required_input(_make_demolish_required(0, (3, 5)))
+        await pilot.pause()
+
+        statics = list(bar.query(Static))
+        assert len(statics) >= 1
+        hint_text = str(statics[0].render())
+        assert "Esc 取消" in hint_text
+
+
+# -- Engine DEMOLISH_TARGET cancel test --------------------------------------
+
+
+def test_engine_demolish_target_none_is_cancel() -> None:
+    """Submitting DEMOLISH_TARGET with target_position=None cancels, goes back to action."""
+    from richman.board import create as create_board
+    from richman.engine.model import GameEngine
+
+    config = build_default_config()
+    board = create_board(config)
+    players: list[Player] = [HumanPlayer("Alice")]
+    engine = GameEngine.create(config, board, players, seed=1)
+
+    # Advance to first human required_input
+    result = engine.advance(None)
+    # Should be human's turn start → ROLL_DICE
+    assert result.required_input is not None
+    assert result.required_input.kind is InputKind.ROLL_DICE
+
+    # Submit ROLL_DICE
+    ei_roll = EngineInput(kind=InputKind.ROLL_DICE, player_index=0)
+    result = engine.advance(ei_roll)
+    # Auto-advance until we get to ACTION_CHOICE or a non-input step
+    while result.required_input is None and not result.game_over:
+        result = engine.advance(None)
+
+    # Now we should be at ACTION_CHOICE (or game over if unlucky, seed=1 is deterministic)
+    if result.game_over:
+        pytest.skip("Game ended too early with seed=1")
+
+    assert result.required_input is not None
+    assert result.required_input.kind in (InputKind.ACTION_CHOICE, InputKind.JAIL_CHOICE)
+
+    # If USE_DEMOLISH is available, test the cancel flow
+    if Action.USE_DEMOLISH in result.required_input.options:
+        ei_demolish = EngineInput(
+            kind=InputKind.ACTION_CHOICE,
+            player_index=0,
+            action=Action.USE_DEMOLISH,
+        )
+        result = engine.advance(ei_demolish)
+        assert result.required_input is not None
+        assert result.required_input.kind is InputKind.DEMOLISH_TARGET
+
+        # Submit cancel (target_position=None)
+        ei_cancel = EngineInput(
+            kind=InputKind.DEMOLISH_TARGET,
+            player_index=0,
+            target_position=None,
+        )
+        result = engine.advance(ei_cancel)
+
+        # Should be back at ACTION_CHOICE (not game over, not END)
+        assert not result.game_over
+        assert result.required_input is not None
+        assert result.required_input.kind is InputKind.ACTION_CHOICE
+        # Same candidates (demolish card not consumed)
+        assert Action.USE_DEMOLISH in result.required_input.options
+        # Engine state: demolish card still available
+        state = engine.get_state()
+        assert state.players[0].hand.demolish > 0
+    else:
+        pytest.skip("USE_DEMOLISH not available in this seed")
+
+
+# -- BoardWidget highlight_positions test ------------------------------------
+
+
+async def test_board_widget_highlight_positions() -> None:
+    """BoardWidget highlights candidate cells and clears highlights."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    geometry = compute_layout_geometry(config, terminal_size=(180, 60))
+
+    class TestApp(App[None]):
+        def compose(self) -> ComposeResult:
+            board = BoardWidget(snapshot, geometry, terminal_size=(180, 60))
+            yield board
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+        board = app.query_one(BoardWidget)
+
+        # Set highlight positions
+        board.set_highlight_positions(frozenset({0, 1}))
+        await pilot.pause()
+
+        # Check that candidate cells have the candidate class
+        for cell in board.query(CellWidget):
+            if cell.position in {0, 1}:
+                assert cell.has_class("candidate"), (
+                    f"Cell {cell.position} should have candidate class"
+                )
+            else:
+                assert not cell.has_class("candidate"), (
+                    f"Cell {cell.position} should NOT have candidate class"
+                )
+
+        # Clear highlights
+        board.set_highlight_positions(frozenset())
+        await pilot.pause()
+
+        for cell in board.query(CellWidget):
+            assert not cell.has_class("candidate"), (
+                f"Cell {cell.position} should have cleared candidate class"
+            )
+
+
+# -- GameScreen Esc cancel flow test -----------------------------------------
+
+
+async def test_game_screen_esc_cancels_demolish_target() -> None:
+    """Pressing Esc during DEMOLISH_TARGET submits cancel input."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    candidates = (0,)
+    engine = FakeEngine(
+        advance_responses=[
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.ACTION,
+                required_input=_make_demolish_required(0, candidates),
+                game_over=False,
+            ),
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.ACTION,
+                required_input=_make_action_required(0, (Action.BUY, Action.SKIP)),
+                game_over=False,
+            ),
+        ],
+        snapshot=snapshot,
+        state=_make_state(winner_name="Alice"),
+    )
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    screen = GameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+
+        # Press Esc during DEMOLISH_TARGET
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Should have submitted DEMOLISH_TARGET with target_position=None
+        demolish_calls = [
+            c
+            for c in engine.advance_calls
+            if c is not None and c.kind is InputKind.DEMOLISH_TARGET
+        ]
+        assert len(demolish_calls) >= 1
+        assert demolish_calls[0].target_position is None
+
+
+# -- Full human interaction chain tests --------------------------------------
+
+
+async def test_human_full_roll_to_action_chain() -> None:
+    """Human player ROLL_DICE → auto-advance → ACTION_CHOICE → choose action."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    engine = FakeEngine(
+        advance_responses=[
+            # First advance(None) → ROLL_DICE
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.DICE_ROLL,
+                required_input=_make_roll_required(0),
+                game_over=False,
+            ),
+            # After ROLL_DICE submit → display step (no input)
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.LANDING,
+                required_input=None,
+                game_over=False,
+            ),
+            # Next advance(None) → ACTION_CHOICE
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.ACTION,
+                required_input=_make_action_required(0, (Action.BUY, Action.SKIP)),
+                game_over=False,
+            ),
+            # After BUY submit → game ends
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.END,
+                required_input=None,
+                game_over=True,
+            ),
+        ],
+        snapshot=snapshot,
+        state=_make_state(winner_name="Alice"),
+    )
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    screen = GameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+
+        # Worker should have stopped at ROLL_DICE for human
+        bar = screen.query_one(ActionBar)
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 1
+        assert "掷骰" in str(buttons[0].label)
+
+        # Click the ROLL_DICE button
+        buttons[0].press()
+        await pilot.pause()
+        await pilot.pause()
+
+        # Now should be at ACTION_CHOICE
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 2
+        labels = [str(b.label) for b in buttons]
+        assert "[1] 购买" in labels
+        assert "[2] 跳过" in labels
+
+        # Click BUY button
+        buttons[0].press()
+        await pilot.pause()
+
+        # Should have submitted roll → advance → action choice → buy
+        assert len(engine.advance_calls) >= 3
+
+
+async def test_human_demolish_click_candidate_chain() -> None:
+    """Human USE_DEMOLISH → DEMOLISH_TARGET → click candidate → continue."""
+    config = build_default_config()
+    snapshot = _make_snapshot(config)
+    engine = FakeEngine(
+        advance_responses=[
+            # First advance(None) → ACTION_CHOICE with USE_DEMOLISH
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.ACTION,
+                required_input=_make_action_required(
+                    0, (Action.USE_DEMOLISH, Action.SKIP)
+                ),
+                game_over=False,
+            ),
+            # After USE_DEMOLISH submit → DEMOLISH_TARGET
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.ACTION,
+                required_input=_make_demolish_required(0, (0,)),
+                game_over=False,
+            ),
+            # After click candidate → game over
+            StepResult(
+                snapshot=snapshot,
+                events=(),
+                phase=Phase.END,
+                required_input=None,
+                game_over=True,
+            ),
+        ],
+        snapshot=snapshot,
+        state=_make_state(winner_name="Alice"),
+    )
+    players: list[Player] = [HumanPlayer("Alice")]
+
+    screen = GameScreen(engine, config, players)
+
+    class TestApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TestApp()
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+
+        # Should be at ACTION_CHOICE with USE_DEMOLISH
+        bar = screen.query_one(ActionBar)
+        buttons = list(bar.query(Button))
+        assert any("拆除" in str(b.label) for b in buttons)
+
+        # Find and click USE_DEMOLISH button (it should be [1] 拆除)
+        demolish_btn = [b for b in buttons if "拆除" in str(b.label)][0]
+        demolish_btn.press()
+        await pilot.pause()
+
+        # Now should be at DEMOLISH_TARGET — no buttons, just hint
+        buttons = list(bar.query(Button))
+        assert len(buttons) == 0
+
+        # BoardWidget should have highlight on position 0
+        board = screen.query_one(BoardWidget)
+        for cell in board.query(CellWidget):
+            if cell.position == 0:
+                assert cell.has_class("candidate")
+
+        # Click the candidate cell
+        cell = screen.query(CellWidget).first()
+        assert cell is not None
+        cell.post_message(CellWidget.CellClicked(0))
+        await pilot.pause()
+
+        # Should have submitted DEMOLISH_TARGET with target_position=0
+        demolish_calls = [
+            c
+            for c in engine.advance_calls
+            if c is not None and c.kind is InputKind.DEMOLISH_TARGET
+        ]
+        assert len(demolish_calls) >= 1
+        assert demolish_calls[0].target_position == 0

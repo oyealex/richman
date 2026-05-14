@@ -3,9 +3,7 @@
 ## Purpose
 
 提供 Textual BoardWidget 体系——按 `TuiLayoutGeometry` 的终端字符坐标渲染棋盘格、中心信息区，发出 CellClicked 点击消息，尺寸不足时展示错误状态。所有 widget 代码限制在 `richman.adapters.textual_tui.widgets` 包内。
-
 ## Requirements
-
 ### Requirement: BoardWidget renders board grid from snapshot and geometry
 
 系统 SHALL 提供 `BoardWidget` Textual widget，接收 `GameSnapshot`、`TuiLayoutGeometry` 和可选的 `terminal_size: tuple[int, int] | None`，按 `position_rects` 绝对定位渲染所有棋盘格和中心信息区。尺寸充足性由 `terminal_size` 直接与 `min_terminal_rows/cols` 比较判断，`terminal_size=None` 时回退到 `geometry.is_terminal_sufficient`。
@@ -135,3 +133,35 @@
 
 - **WHEN** BoardWidget 接收新的 `GameSnapshot`（如阶段变更）
 - **THEN** CenterPanel MUST 更新显示当前阶段、骰子、事件
+
+### Requirement: BoardWidget accepts highlight positions for candidate cells
+
+系统 SHALL 为 BoardWidget 提供 `highlight_positions: Reactive[frozenset[int]]` reactive 属性，接收需要高亮的 position 集合。watcher 为对应 CellWidget 添加或移除 CSS class `candidate`。
+
+#### Scenario: Setting highlight_positions adds candidate class
+
+- **WHEN** `board.highlight_positions = frozenset({3, 5})`
+- **THEN** position 3 和 5 的 CellWidget MUST 添加 CSS class `candidate`
+- **AND** 其他 CellWidget MUST NOT 有 `candidate` class
+
+#### Scenario: Updating highlight_positions replaces previous highlights
+
+- **WHEN** `board.highlight_positions` 从 `frozenset({3, 5})` 变为 `frozenset({7})`
+- **THEN** position 7 的 CellWidget MUST 有 `candidate` class
+- **AND** position 3 和 5 的 CellWidget MUST NOT 有 `candidate` class
+
+#### Scenario: Empty highlight_positions clears all highlights
+
+- **WHEN** `board.highlight_positions = frozenset()`
+- **THEN** 所有 CellWidget 的 `candidate` CSS class MUST 被移除
+
+### Requirement: CellWidget renders candidate highlight style
+
+系统 SHALL 为 CellWidget 定义 `candidate` CSS class，以高亮边框样式区分候选格。
+
+#### Scenario: Candidate cell has distinctive border
+
+- **WHEN** CellWidget 拥有 CSS class `candidate`
+- **THEN** 该 CellWidget MUST 使用区别于 `current` 的高亮边框样式
+- **AND** `candidate` 和 `current` class 可同时存在（玩家站在候选格上时）
+

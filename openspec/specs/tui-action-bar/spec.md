@@ -3,12 +3,10 @@
 ## Purpose
 
 提供 `ActionBar` widget，根据 `RequiredInput` 动态渲染操作按钮（掷骰、动作选择、监狱选择、拆除目标），支持鼠标点击和键盘快捷键提交 `EngineInput`。
-
 ## Requirements
-
 ### Requirement: ActionBar renders input controls per RequiredInput kind
 
-系统 SHALL 提供 `ActionBar` widget（Textual `Widget` 子类），通过 `required_input: Reactive[RequiredInput | None]` reactive 属性接收输入状态。`watch_required_input` watcher 异步清空子 widget 并重建对应按钮或提示文字。
+系统 SHALL 提供 `ActionBar` widget（Textual `Widget` 子类），通过 `required_input: Reactive[RequiredInput | None]` reactive 属性接收输入状态。`watch_required_input` watcher 异步清空子 widget 并重建对应按钮或提示文字。按钮标签包含数字快捷键序号。
 
 #### Scenario: ActionBar renders ROLL_DICE button
 
@@ -19,13 +17,15 @@
 #### Scenario: ActionBar renders ACTION_CHOICE buttons
 
 - **WHEN** 传入 `RequiredInput(kind=ACTION_CHOICE, player_index=0, options=(BUY, SKIP))`
-- **THEN** ActionBar MUST 渲染两个按钮，分别对应 "购买" 和 "跳过"
+- **THEN** ActionBar MUST 渲染两个按钮
+- **AND** 第一个按钮标签 MUST 为 `[1] 购买`
+- **AND** 第二个按钮标签 MUST 为 `[2] 跳过`
 - **AND** 每个按钮点击时 MUST 发出包含对应 `Action` 的 `ActionSubmitted`
 
 #### Scenario: ActionBar renders JAIL_CHOICE buttons
 
 - **WHEN** 传入 `RequiredInput(kind=JAIL_CHOICE, player_index=0, options=(USE_JAIL_PASS, ACCEPT_JAIL))`
-- **THEN** ActionBar MUST 渲染对应两个按钮
+- **THEN** ActionBar MUST 渲染两个带序号前缀的按钮
 - **AND** 每个按钮 MUST 发出包含对应 `Action` 的 `ActionSubmitted`
 
 #### Scenario: ActionBar renders DEMOLISH_TARGET hint
@@ -34,6 +34,7 @@
 - **THEN** ActionBar MUST 渲染提示文字"请点击棋盘上的目标格子"
 - **AND** MUST NOT 渲染操作按钮
 - **AND** MUST 列出候选 position
+- **AND** MUST 包含 "Esc 取消" 取消指引
 
 #### Scenario: ActionBar clears when no input required
 
@@ -81,3 +82,4 @@
 
 - **WHEN** 导入 ActionBar
 - **THEN** 导入路径 MUST 为 `richman.adapters.textual_tui.widgets.action_bar.ActionBar`
+
